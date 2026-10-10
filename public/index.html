@@ -63,12 +63,12 @@
           box.textContent = msg.media.filename;
           if (msg.media.mimeType.startsWith('image/')) {
             const img = document.createElement('img');
-            img.src = `/media/${state.sessionId}/${msg.media.id}?token=${encodeURIComponent(state.token)}`;
+            img.src = `/media/${encodeURIComponent(state.sessionId)}/${encodeURIComponent(msg.media.id)}?token=${encodeURIComponent(state.token)}`;
             box.appendChild(img);
           } else {
             const video = document.createElement('video');
             video.controls = true;
-            video.src = `/media/${state.sessionId}/${msg.media.id}?token=${encodeURIComponent(state.token)}`;
+            video.src = `/media/${encodeURIComponent(state.sessionId)}/${encodeURIComponent(msg.media.id)}?token=${encodeURIComponent(state.token)}`;
             box.appendChild(video);
           }
           if (msg.canDelete) {

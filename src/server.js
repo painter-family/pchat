@@ -51,7 +51,7 @@ function sanitizeMessage(message, token, session) {
     };
   }
   const media = session.media.get(message.mediaId);
-  const canDelete = media && media.ownerToken === token && !media.deletedAt;
+  const canDelete = Boolean(media && media.ownerToken === token && !media.deletedAt);
   return {
     id: message.id,
     type: 'media',
@@ -179,7 +179,7 @@ function createApp({ dataRoot = path.join(process.cwd(), 'uploads') } = {}) {
         const base64 = data.includes(',') ? data.split(',')[1] : data;
         const mediaId = randomId();
         const extFromName = path.extname(path.basename(filename)).replace(/^\./, '').toLowerCase();
-        const extFromMime = mimeType.split('/')[1].split('+')[0].toLowerCase();
+        const extFromMime = mimeType.split('/')[1].split(/[+;]/)[0].toLowerCase();
         const ext = [extFromName, extFromMime].find((value) => allowedMediaExtensions.has(value));
         if (!ext) return json(res, 400, { error: 'Unsupported media type' });
         const sessionDir = path.join(dataRoot, sessionId);
@@ -262,7 +262,7 @@ function startServer(options = {}) {
       json(res, 500, { error: error.message });
     });
   });
-  const port = options.port || 3000;
+  const port = options.port ?? 3000;
   return new Promise((resolve) => {
     server.listen(port, () => resolve({ server, port: server.address().port }));
   });
