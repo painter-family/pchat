@@ -1,0 +1,177 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>pchat</title>
+  <style>
+    body { font-family: sans-serif; margin: 1rem; max-width: 52rem; }
+    #chat { border: 1px solid #ccc; border-radius: .5rem; padding: .75rem; min-height: 12rem; }
+    .msg { margin: .35rem 0; padding: .5rem; border-radius: .35rem; background: #f3f3f3; }
+    .mine { background: #dbeafe; }
+    img, video { max-width: 100%; border-radius: .35rem; margin-top: .35rem; }
+  </style>
+</head>
+<body>
+  <h1>pchat</h1>
+  <p>Private invite-link chat. Users only see messages and media in this session.</p>
+
+  <button id="create">Create chat session</button>
+  <p id="invite"></p>
+
+  <div>
+    <label>Session ID <input id="sessionId"></label>
+    <label>Token <input id="token"></label>
+    <button id="join">Join</button>
+  </div>
+
+  <hr>
+
+  <div id="status"></div>
+  <div id="chat"></div>
+
+  <div>
+    <input id="message" placeholder="Type a message">
+    <button id="send">Send</button>
+  </div>
+
+  <div>
+    <input id="media" type="file" accept="image/*,video/*">
+    <button id="upload">Upload image/video</button>
+  </div>
+
+  <script>
+    const state = { sessionId: '', token: '' };
+    let poller = null;
+    const status = document.getElementById('status');
+    const chat = document.getElementById('chat');
+    const qs = new URLSearchParams(location.search);
+    if (qs.get('sessionId')) document.getElementById('sessionId').value = qs.get('sessionId');
+    if (qs.get('token')) document.getElementById('token').value = qs.get('token');
+
+    async function loadMessages() {
+      if (!state.sessionId || !state.token) return;
+      const res = await fetch(`/api/sessions/${encodeURIComponent(state.sessionId)}?token=${encodeURIComponent(state.token)}`);
+      if (!res.ok) return;
+      const data = await res.json();
+      chat.innerHTML = '';
+      for (const msg of data.messages) {
+        const box = document.createElement('div');
+        box.className = `msg ${msg.mine ? 'mine' : ''}`;
+        if (msg.type === 'text') {
+          box.textContent = msg.text;
+        } else if (msg.media && !msg.media.deleted) {
+          box.textContent = msg.media.filename;
+          if (msg.media.mimeType.startsWith('image/')) {
+            const img = document.createElement('img');
+            img.src = `/media/${encodeURIComponent(state.sessionId)}/${encodeURIComponent(msg.media.id)}?token=${encodeURIComponent(state.token)}`;
+            box.appendChild(img);
+          } else {
+            const video = document.createElement('video');
+            video.controls = true;
+            video.src = `/media/${encodeURIComponent(state.sessionId)}/${encodeURIComponent(msg.media.id)}?token=${encodeURIComponent(state.token)}`;
+            box.appendChild(video);
+          }
+          if (msg.canDelete) {
+            const btn = document.createElement('button');
+            btn.textContent = 'Delete upload';
+            btn.onclick = async () => {
+              await fetch(`/api/sessions/${encodeURIComponent(state.sessionId)}/media/${encodeURIComponent(msg.media.id)}`, {
+                method: 'DELETE',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ token: state.token })
+              });
+              loadMessages();
+            };
+            box.appendChild(btn);
+          }
+        } else {
+          box.textContent = '[deleted media]';
+        }
+        chat.appendChild(box);
+      }
+    }
+
+    document.getElementById('create').onclick = async () => {
+      const res = await fetch('/api/sessions', { method: 'POST' });
+      const data = await res.json();
+      document.getElementById('sessionId').value = data.sessionId;
+      document.getElementById('token').value = data.participantToken;
+      const invite = document.getElementById('invite');
+      invite.textContent = 'Invite link: ';
+      const link = document.createElement('a');
+      const inviteUrl = new URL(data.joinLink, location.origin);
+      if (inviteUrl.protocol !== 'http:' && inviteUrl.protocol !== 'https:') {
+        status.textContent = 'Server returned an invalid invite link.';
+        return;
+      }
+      link.href = inviteUrl.href;
+      link.textContent = inviteUrl.href;
+      invite.appendChild(link);
+      status.textContent = 'Session created.';
+    };
+
+    document.getElementById('join').onclick = async () => {
+      state.sessionId = document.getElementById('sessionId').value.trim();
+      state.token = document.getElementById('token').value.trim();
+      if (!state.sessionId || !state.token) return;
+      const existingRes = await fetch(`/api/sessions/${encodeURIComponent(state.sessionId)}?token=${encodeURIComponent(state.token)}`);
+      if (!existingRes.ok) {
+        const joinRes = await fetch(`/api/sessions/${encodeURIComponent(state.sessionId)}/join`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ inviteCode: state.token })
+        });
+        if (!joinRes.ok) {
+          const error = await joinRes.json().catch(() => ({}));
+          status.textContent = error.error || 'Unable to join with invite code.';
+          return;
+        }
+        const joinData = await joinRes.json();
+        state.token = joinData.participantToken;
+        document.getElementById('token').value = state.token;
+      }
+      status.textContent = 'Joined.';
+      loadMessages();
+      if (poller) clearInterval(poller);
+      poller = setInterval(loadMessages, 2000);
+    };
+
+    document.getElementById('send').onclick = async () => {
+      const text = document.getElementById('message').value.trim();
+      if (!text || !state.sessionId || !state.token) return;
+      await fetch(`/api/sessions/${encodeURIComponent(state.sessionId)}/messages`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ token: state.token, text })
+      });
+      document.getElementById('message').value = '';
+      loadMessages();
+    };
+
+    document.getElementById('upload').onclick = async () => {
+      const file = document.getElementById('media').files[0];
+      if (!file || !state.sessionId || !state.token) return;
+      const data = await new Promise((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = () => resolve(reader.result);
+        reader.onerror = reject;
+        reader.readAsDataURL(file);
+      });
+      await fetch(`/api/sessions/${encodeURIComponent(state.sessionId)}/media`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          token: state.token,
+          filename: file.name,
+          mimeType: file.type,
+          data
+        })
+      });
+      document.getElementById('media').value = '';
+      loadMessages();
+    };
+
+  </script>
+</body>
+</html>
