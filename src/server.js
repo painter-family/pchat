@@ -89,7 +89,6 @@ function createApp({ dataRoot = path.join(process.cwd(), 'uploads') } = {}) {
     'gif',
     'webp',
     'bmp',
-    'svg',
     'mp4',
     'webm',
     'mov',
@@ -104,7 +103,6 @@ function createApp({ dataRoot = path.join(process.cwd(), 'uploads') } = {}) {
     gif: 'image/gif',
     webp: 'image/webp',
     bmp: 'image/bmp',
-    svg: 'image/svg+xml',
     mp4: 'video/mp4',
     webm: 'video/webm',
     mov: 'video/quicktime',
@@ -300,7 +298,8 @@ function startServer(options = {}) {
   const app = createApp(options);
   const server = http.createServer((req, res) => {
     Promise.resolve(app.handler(req, res)).catch((error) => {
-      json(res, 500, { error: error.message });
+      console.error(error);
+      json(res, 500, { error: 'Internal server error' });
     });
   });
   const port = options.port ?? 3000;

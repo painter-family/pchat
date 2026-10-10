@@ -129,7 +129,7 @@
     document.getElementById('send').onclick = async () => {
       const text = document.getElementById('message').value.trim();
       if (!text || !state.sessionId || !state.token) return;
-      await fetch(`/api/sessions/${state.sessionId}/messages`, {
+      await fetch(`/api/sessions/${encodeURIComponent(state.sessionId)}/messages`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ token: state.token, text })
@@ -147,7 +147,7 @@
         reader.onerror = reject;
         reader.readAsDataURL(file);
       });
-      await fetch(`/api/sessions/${state.sessionId}/media`, {
+      await fetch(`/api/sessions/${encodeURIComponent(state.sessionId)}/media`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
