@@ -96,7 +96,12 @@
       const data = await res.json();
       document.getElementById('sessionId').value = data.sessionId;
       document.getElementById('token').value = data.participantToken;
-      document.getElementById('invite').innerHTML = `Invite link: <a href="${data.joinLink}">${data.joinLink}</a>`;
+      const invite = document.getElementById('invite');
+      invite.textContent = 'Invite link: ';
+      const link = document.createElement('a');
+      link.href = data.joinLink;
+      link.textContent = data.joinLink;
+      invite.appendChild(link);
       status.textContent = 'Session created.';
     };
 

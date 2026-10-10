@@ -17,13 +17,18 @@ function randomId() {
 function parseBody(req) {
   return new Promise((resolve, reject) => {
     let raw = '';
+    let failed = false;
     req.on('data', (chunk) => {
+      if (failed) return;
       raw += chunk.toString('utf8');
       if (raw.length > 25 * 1024 * 1024) {
+        failed = true;
         reject(new Error('Request too large'));
+        req.destroy();
       }
     });
     req.on('end', () => {
+      if (failed) return;
       if (!raw) return resolve({});
       try {
         resolve(JSON.parse(raw));
@@ -67,6 +72,21 @@ function sanitizeMessage(message, token, session) {
 
 function createApp({ dataRoot = path.join(process.cwd(), 'uploads') } = {}) {
   const sessions = new Map();
+  const allowedMediaExtensions = new Set([
+    'png',
+    'jpg',
+    'jpeg',
+    'gif',
+    'webp',
+    'bmp',
+    'svg',
+    'mp4',
+    'webm',
+    'mov',
+    'avi',
+    'mkv',
+    'ogg'
+  ]);
   fs.mkdirSync(dataRoot, { recursive: true });
 
   function getSession(sessionId, token) {
@@ -78,7 +98,8 @@ function createApp({ dataRoot = path.join(process.cwd(), 'uploads') } = {}) {
   async function serveStatic(filePath, res, type) {
     try {
       const content = await fsp.readFile(filePath);
-      res.writeHead(200, { 'Content-Type': `${type}; charset=utf-8` });
+      const contentType = type.startsWith('text/') ? `${type}; charset=utf-8` : type;
+      res.writeHead(200, { 'Content-Type': contentType });
       res.end(content);
     } catch {
       res.writeHead(404);
@@ -157,7 +178,10 @@ function createApp({ dataRoot = path.join(process.cwd(), 'uploads') } = {}) {
         if (!session) return json(res, 404, { error: 'Session not found' });
         const base64 = data.includes(',') ? data.split(',')[1] : data;
         const mediaId = randomId();
-        const ext = path.extname(filename).replace('.', '') || mimeType.split('/')[1] || 'bin';
+        const extFromName = path.extname(path.basename(filename)).replace(/^\./, '').toLowerCase();
+        const extFromMime = mimeType.split('/')[1].split('+')[0].toLowerCase();
+        const ext = [extFromName, extFromMime].find((value) => allowedMediaExtensions.has(value));
+        if (!ext) return json(res, 400, { error: 'Unsupported media type' });
         const sessionDir = path.join(dataRoot, sessionId);
         await fsp.mkdir(sessionDir, { recursive: true });
         const mediaPath = path.join(sessionDir, `${mediaId}.${ext}`);
