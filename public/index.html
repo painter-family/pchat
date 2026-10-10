@@ -100,8 +100,13 @@
       const invite = document.getElementById('invite');
       invite.textContent = 'Invite link: ';
       const link = document.createElement('a');
-      link.href = data.joinLink;
-      link.textContent = data.joinLink;
+      const inviteUrl = new URL(data.joinLink, location.origin);
+      if (inviteUrl.protocol !== 'http:' && inviteUrl.protocol !== 'https:') {
+        status.textContent = 'Server returned an invalid invite link.';
+        return;
+      }
+      link.href = inviteUrl.href;
+      link.textContent = inviteUrl.href;
       invite.appendChild(link);
       status.textContent = 'Session created.';
     };
@@ -119,8 +124,16 @@
         const joinData = await joinRes.json();
         state.token = joinData.participantToken;
         document.getElementById('token').value = state.token;
+        status.textContent = 'Joined.';
+      } else {
+        const probe = await fetch(`/api/sessions/${encodeURIComponent(state.sessionId)}?token=${encodeURIComponent(state.token)}`);
+        if (probe.ok) {
+          status.textContent = 'Joined.';
+        } else {
+          const error = await joinRes.json().catch(() => ({}));
+          status.textContent = error.error || 'Unable to join with invite code.';
+        }
       }
-      status.textContent = 'Joined.';
       loadMessages();
       if (poller) clearInterval(poller);
       poller = setInterval(loadMessages, 2000);

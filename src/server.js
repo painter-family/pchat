@@ -150,7 +150,7 @@ function createApp({ dataRoot = path.join(process.cwd(), 'uploads') } = {}) {
         messages: [],
         media: new Map()
       });
-      const joinLink = `/?sessionId=${sessionId}&token=${inviteCode}`;
+      const joinLink = `/?sessionId=${encodeURIComponent(sessionId)}&token=${encodeURIComponent(inviteCode)}`;
       return json(res, 201, { sessionId, participantToken, joinLink });
     }
 
@@ -248,6 +248,7 @@ function createApp({ dataRoot = path.join(process.cwd(), 'uploads') } = {}) {
         const parsed = await safeParseBody(req);
         if (!parsed.ok) return json(res, 400, { error: parsed.error });
         const auth = parsed.body.token;
+        if (!auth) return json(res, 400, { error: 'token is required' });
         const mediaId = parts[4];
         const authorizedSession = getSession(sessionId, auth);
         if (!authorizedSession) return json(res, 404, { error: 'Session not found' });
