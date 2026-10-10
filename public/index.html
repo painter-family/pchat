@@ -115,25 +115,23 @@
       state.sessionId = document.getElementById('sessionId').value.trim();
       state.token = document.getElementById('token').value.trim();
       if (!state.sessionId || !state.token) return;
-      const joinRes = await fetch(`/api/sessions/${encodeURIComponent(state.sessionId)}/join`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ inviteCode: state.token })
-      });
-      if (joinRes.ok) {
+      const existingRes = await fetch(`/api/sessions/${encodeURIComponent(state.sessionId)}?token=${encodeURIComponent(state.token)}`);
+      if (!existingRes.ok) {
+        const joinRes = await fetch(`/api/sessions/${encodeURIComponent(state.sessionId)}/join`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ inviteCode: state.token })
+        });
+        if (!joinRes.ok) {
+          const error = await joinRes.json().catch(() => ({}));
+          status.textContent = error.error || 'Unable to join with invite code.';
+          return;
+        }
         const joinData = await joinRes.json();
         state.token = joinData.participantToken;
         document.getElementById('token').value = state.token;
-        status.textContent = 'Joined.';
-      } else {
-        const probe = await fetch(`/api/sessions/${encodeURIComponent(state.sessionId)}?token=${encodeURIComponent(state.token)}`);
-        if (probe.ok) {
-          status.textContent = 'Joined.';
-        } else {
-          const error = await joinRes.json().catch(() => ({}));
-          status.textContent = error.error || 'Unable to join with invite code.';
-        }
       }
+      status.textContent = 'Joined.';
       loadMessages();
       if (poller) clearInterval(poller);
       poller = setInterval(loadMessages, 2000);

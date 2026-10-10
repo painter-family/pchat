@@ -82,6 +82,7 @@ function sanitizeMessage(message, token, session) {
 
 function createApp({ dataRoot = path.join(process.cwd(), 'uploads') } = {}) {
   const sessions = new Map();
+  const MAX_PARTICIPANTS = 2;
   const allowedMediaExtensions = new Set([
     'png',
     'jpg',
@@ -109,6 +110,20 @@ function createApp({ dataRoot = path.join(process.cwd(), 'uploads') } = {}) {
     avi: 'video/x-msvideo',
     mkv: 'video/x-matroska',
     ogg: 'video/ogg'
+  };
+  const mimeSubtypeToExtension = {
+    png: 'png',
+    jpeg: 'jpeg',
+    jpg: 'jpg',
+    gif: 'gif',
+    webp: 'webp',
+    bmp: 'bmp',
+    mp4: 'mp4',
+    webm: 'webm',
+    quicktime: 'mov',
+    'x-msvideo': 'avi',
+    'x-matroska': 'mkv',
+    ogg: 'ogg'
   };
   fs.mkdirSync(dataRoot, { recursive: true });
 
@@ -144,7 +159,8 @@ function createApp({ dataRoot = path.join(process.cwd(), 'uploads') } = {}) {
       const inviteCode = randomId();
       sessions.set(sessionId, {
         id: sessionId,
-        participants: [{ token: participantToken }, null],
+        // Sessions intentionally support exactly two participants.
+        participants: Array.from({ length: MAX_PARTICIPANTS }, (_, index) => (index === 0 ? { token: participantToken } : null)),
         inviteCode,
         inviteConsumed: false,
         messages: [],
@@ -217,8 +233,8 @@ function createApp({ dataRoot = path.join(process.cwd(), 'uploads') } = {}) {
         const base64 = data.includes(',') ? data.split(',')[1] : data;
         const mediaId = randomId();
         const extFromMime = mimeMatch[2].split(/[+;]/)[0].toLowerCase();
-        const ext = allowedMediaExtensions.has(extFromMime) ? extFromMime : null;
-        if (!ext) return json(res, 400, { error: 'Unsupported media type' });
+        const ext = mimeSubtypeToExtension[extFromMime];
+        if (!ext || !allowedMediaExtensions.has(ext)) return json(res, 400, { error: 'Unsupported media type' });
         const safeMimeType = extensionToMime[ext];
         const sessionDir = path.join(dataRoot, sessionId);
         await fsp.mkdir(sessionDir, { recursive: true });
@@ -300,7 +316,11 @@ function startServer(options = {}) {
   const server = http.createServer((req, res) => {
     Promise.resolve(app.handler(req, res)).catch((error) => {
       console.error(error);
-      json(res, 500, { error: 'Internal server error' });
+      if (!res.headersSent) {
+        json(res, 500, { error: 'Internal server error' });
+      } else {
+        res.end();
+      }
     });
   });
   const port = options.port ?? 3000;
