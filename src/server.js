@@ -4,6 +4,8 @@ const fsp = require('fs/promises');
 const path = require('path');
 const crypto = require('crypto');
 const { URL } = require('url');
+// Cap request bodies to keep in-memory buffering bounded for text and base64 media uploads.
+const MAX_BODY_BYTES = 25 * 1024 * 1024;
 
 function json(res, status, data) {
   res.writeHead(status, { 'Content-Type': 'application/json; charset=utf-8' });
@@ -21,7 +23,7 @@ function parseBody(req) {
     req.on('data', (chunk) => {
       if (failed) return;
       raw += chunk.toString('utf8');
-      if (raw.length > 25 * 1024 * 1024) {
+      if (raw.length > MAX_BODY_BYTES) {
         failed = true;
         reject(new Error('Request too large'));
         req.destroy();
@@ -87,6 +89,21 @@ function createApp({ dataRoot = path.join(process.cwd(), 'uploads') } = {}) {
     'mkv',
     'ogg'
   ]);
+  const extensionToMime = {
+    png: 'image/png',
+    jpg: 'image/jpeg',
+    jpeg: 'image/jpeg',
+    gif: 'image/gif',
+    webp: 'image/webp',
+    bmp: 'image/bmp',
+    svg: 'image/svg+xml',
+    mp4: 'video/mp4',
+    webm: 'video/webm',
+    mov: 'video/quicktime',
+    avi: 'video/x-msvideo',
+    mkv: 'video/x-matroska',
+    ogg: 'video/ogg'
+  };
   fs.mkdirSync(dataRoot, { recursive: true });
 
   function getSession(sessionId, token) {
@@ -108,9 +125,7 @@ function createApp({ dataRoot = path.join(process.cwd(), 'uploads') } = {}) {
   }
 
   async function handler(req, res) {
-    const host = req.headers.host || 'localhost';
-    const protocol = req.headers['x-forwarded-proto'] || 'http';
-    const url = new URL(req.url, `${protocol}://${host}`);
+    const url = new URL(req.url, 'http://localhost');
     const parts = url.pathname.split('/').filter(Boolean);
 
     if (req.method === 'GET' && url.pathname === '/') {
@@ -127,7 +142,7 @@ function createApp({ dataRoot = path.join(process.cwd(), 'uploads') } = {}) {
         messages: [],
         media: new Map()
       });
-      const joinLink = `${protocol}://${host}/?sessionId=${sessionId}&token=${inviteToken}`;
+      const joinLink = `/?sessionId=${sessionId}&token=${inviteToken}`;
       return json(res, 201, { sessionId, participantToken, joinLink });
     }
 
@@ -167,11 +182,12 @@ function createApp({ dataRoot = path.join(process.cwd(), 'uploads') } = {}) {
         const body = await parseBody(req).catch((error) => ({ __error: error.message }));
         if (body.__error) return json(res, 400, { error: body.__error });
         const auth = body.token;
-        const mimeType = typeof body.mimeType === 'string' ? body.mimeType : '';
+        const mimeType = typeof body.mimeType === 'string' ? body.mimeType.trim().toLowerCase() : '';
         const filename = typeof body.filename === 'string' ? body.filename : 'upload';
         const data = typeof body.data === 'string' ? body.data : '';
         if (!auth || !mimeType || !data) return json(res, 400, { error: 'Invalid media payload' });
-        if (!mimeType.startsWith('image/') && !mimeType.startsWith('video/')) {
+        const mimeMatch = mimeType.match(/^(image|video)\/([a-z0-9.+-]+)$/);
+        if (!mimeMatch) {
           return json(res, 400, { error: 'Only image and video uploads are allowed' });
         }
         const session = getSession(sessionId, auth);
@@ -179,9 +195,10 @@ function createApp({ dataRoot = path.join(process.cwd(), 'uploads') } = {}) {
         const base64 = data.includes(',') ? data.split(',')[1] : data;
         const mediaId = randomId();
         const extFromName = path.extname(path.basename(filename)).replace(/^\./, '').toLowerCase();
-        const extFromMime = mimeType.split('/')[1].split(/[+;]/)[0].toLowerCase();
+        const extFromMime = mimeMatch[2].split(/[+;]/)[0].toLowerCase();
         const ext = [extFromName, extFromMime].find((value) => allowedMediaExtensions.has(value));
         if (!ext) return json(res, 400, { error: 'Unsupported media type' });
+        const safeMimeType = extensionToMime[ext];
         const sessionDir = path.join(dataRoot, sessionId);
         await fsp.mkdir(sessionDir, { recursive: true });
         const mediaPath = path.join(sessionDir, `${mediaId}.${ext}`);
@@ -190,7 +207,7 @@ function createApp({ dataRoot = path.join(process.cwd(), 'uploads') } = {}) {
         session.media.set(mediaId, {
           id: mediaId,
           filename,
-          mimeType,
+          mimeType: safeMimeType,
           ownerToken: auth,
           path: mediaPath,
           deletedAt: null

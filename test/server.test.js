@@ -18,7 +18,7 @@ test('supports private invite-link chat and history', async () => {
 
   try {
     const created = await createSession(baseUrl);
-    const inviteUrl = new URL(created.joinLink);
+    const inviteUrl = new URL(created.joinLink, baseUrl);
     const inviteToken = inviteUrl.searchParams.get('token');
     assert.ok(inviteToken);
     assert.notEqual(inviteToken, created.participantToken);
@@ -51,7 +51,7 @@ test('stores media and only allows owner deletion', async () => {
 
   try {
     const created = await createSession(baseUrl);
-    const inviteToken = new URL(created.joinLink).searchParams.get('token');
+    const inviteToken = new URL(created.joinLink, baseUrl).searchParams.get('token');
     const data = Buffer.from('tiny-image').toString('base64');
 
     let res = await fetch(`${baseUrl}/api/sessions/${created.sessionId}/media`, {

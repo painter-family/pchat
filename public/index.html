@@ -42,6 +42,7 @@
 
   <script>
     const state = { sessionId: '', token: '' };
+    let poller = null;
     const status = document.getElementById('status');
     const chat = document.getElementById('chat');
     const qs = new URLSearchParams(location.search);
@@ -111,6 +112,8 @@
       if (!state.sessionId || !state.token) return;
       status.textContent = 'Joined.';
       loadMessages();
+      if (poller) clearInterval(poller);
+      poller = setInterval(loadMessages, 2000);
     };
 
     document.getElementById('send').onclick = async () => {
@@ -148,7 +151,6 @@
       loadMessages();
     };
 
-    setInterval(loadMessages, 2000);
   </script>
 </body>
 </html>
