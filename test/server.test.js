@@ -19,9 +19,17 @@ test('supports private invite-link chat and history', async () => {
   try {
     const created = await createSession(baseUrl);
     const inviteUrl = new URL(created.joinLink, baseUrl);
-    const inviteToken = inviteUrl.searchParams.get('token');
-    assert.ok(inviteToken);
-    assert.notEqual(inviteToken, created.participantToken);
+    const inviteCode = inviteUrl.searchParams.get('token');
+    assert.ok(inviteCode);
+    assert.notEqual(inviteCode, created.participantToken);
+    let joinRes = await fetch(`${baseUrl}/api/sessions/${created.sessionId}/join`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ inviteCode })
+    });
+    assert.equal(joinRes.status, 201);
+    const joined = await joinRes.json();
+    const inviteToken = joined.participantToken;
 
     let res = await fetch(`${baseUrl}/api/sessions/${created.sessionId}?token=bad`);
     assert.equal(res.status, 404);
@@ -51,7 +59,14 @@ test('stores media and only allows owner deletion', async () => {
 
   try {
     const created = await createSession(baseUrl);
-    const inviteToken = new URL(created.joinLink, baseUrl).searchParams.get('token');
+    const inviteCode = new URL(created.joinLink, baseUrl).searchParams.get('token');
+    let joinRes = await fetch(`${baseUrl}/api/sessions/${created.sessionId}/join`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ inviteCode })
+    });
+    assert.equal(joinRes.status, 201);
+    const inviteToken = (await joinRes.json()).participantToken;
     const data = Buffer.from('tiny-image').toString('base64');
 
     let res = await fetch(`${baseUrl}/api/sessions/${created.sessionId}/media`, {
@@ -86,6 +101,13 @@ test('stores media and only allows owner deletion', async () => {
 
     res = await fetch(`${baseUrl}/media/${created.sessionId}/${mediaId}?token=${created.participantToken}`);
     assert.equal(res.status, 404);
+
+    joinRes = await fetch(`${baseUrl}/api/sessions/${created.sessionId}/join`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ inviteCode })
+    });
+    assert.equal(joinRes.status, 409);
   } finally {
     await new Promise((resolve) => server.close(resolve));
   }

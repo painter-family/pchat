@@ -51,7 +51,7 @@
 
     async function loadMessages() {
       if (!state.sessionId || !state.token) return;
-      const res = await fetch(`/api/sessions/${state.sessionId}?token=${encodeURIComponent(state.token)}`);
+      const res = await fetch(`/api/sessions/${encodeURIComponent(state.sessionId)}?token=${encodeURIComponent(state.token)}`);
       if (!res.ok) return;
       const data = await res.json();
       chat.innerHTML = '';
@@ -76,7 +76,7 @@
             const btn = document.createElement('button');
             btn.textContent = 'Delete upload';
             btn.onclick = async () => {
-              await fetch(`/api/sessions/${state.sessionId}/media/${msg.media.id}`, {
+              await fetch(`/api/sessions/${encodeURIComponent(state.sessionId)}/media/${encodeURIComponent(msg.media.id)}`, {
                 method: 'DELETE',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ token: state.token })
@@ -110,6 +110,16 @@
       state.sessionId = document.getElementById('sessionId').value.trim();
       state.token = document.getElementById('token').value.trim();
       if (!state.sessionId || !state.token) return;
+      const joinRes = await fetch(`/api/sessions/${encodeURIComponent(state.sessionId)}/join`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ inviteCode: state.token })
+      });
+      if (joinRes.ok) {
+        const joinData = await joinRes.json();
+        state.token = joinData.participantToken;
+        document.getElementById('token').value = state.token;
+      }
       status.textContent = 'Joined.';
       loadMessages();
       if (poller) clearInterval(poller);

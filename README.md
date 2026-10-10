@@ -10,7 +10,7 @@ Private invite-link chat service.
 - Upload image/video attachments into the chat
 - Delete only your own uploaded media
 
-> The join link is the access credential for the second participant. Keep it private.
+> The join link is the access credential for the second participant. Keep it private. It can only be redeemed once.
 
 ## Run
 

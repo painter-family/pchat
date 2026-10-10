@@ -42,6 +42,14 @@ function parseBody(req) {
   });
 }
 
+async function safeParseBody(req) {
+  try {
+    return { ok: true, body: await parseBody(req) };
+  } catch (error) {
+    return { ok: false, error: error.message };
+  }
+}
+
 function sanitizeMessage(message, token, session) {
   if (message.type === 'text') {
     return {
@@ -108,7 +116,7 @@ function createApp({ dataRoot = path.join(process.cwd(), 'uploads') } = {}) {
 
   function getSession(sessionId, token) {
     const session = sessions.get(sessionId);
-    if (!session || !session.participants.includes(token)) return null;
+    if (!session || !session.participants.some((participant) => participant && participant.token === token)) return null;
     return session;
   }
 
@@ -135,40 +143,56 @@ function createApp({ dataRoot = path.join(process.cwd(), 'uploads') } = {}) {
     if (req.method === 'POST' && url.pathname === '/api/sessions') {
       const sessionId = randomId();
       const participantToken = randomId();
-      const inviteToken = randomId();
+      const inviteCode = randomId();
       sessions.set(sessionId, {
         id: sessionId,
-        participants: [participantToken, inviteToken],
+        participants: [{ token: participantToken }, null],
+        inviteCode,
+        inviteConsumed: false,
         messages: [],
         media: new Map()
       });
-      const joinLink = `/?sessionId=${sessionId}&token=${inviteToken}`;
+      const joinLink = `/?sessionId=${sessionId}&token=${inviteCode}`;
       return json(res, 201, { sessionId, participantToken, joinLink });
     }
 
     if (parts[0] === 'api' && parts[1] === 'sessions' && parts[2]) {
       const sessionId = parts[2];
       const token = url.searchParams.get('token');
+      const session = sessions.get(sessionId);
+
+      if (req.method === 'POST' && parts[3] === 'join') {
+        const parsed = await safeParseBody(req);
+        if (!parsed.ok) return json(res, 400, { error: parsed.error });
+        if (!session) return json(res, 404, { error: 'Session not found' });
+        const inviteCode = typeof parsed.body.inviteCode === 'string' ? parsed.body.inviteCode : '';
+        if (inviteCode !== session.inviteCode) return json(res, 403, { error: 'Invalid invite code' });
+        if (session.inviteConsumed) return json(res, 409, { error: 'Invite link has already been used' });
+        const participantToken = randomId();
+        session.participants[1] = { token: participantToken };
+        session.inviteConsumed = true;
+        return json(res, 201, { participantToken });
+      }
 
       if (req.method === 'GET' && parts.length === 3) {
         if (!token) return json(res, 401, { error: 'Missing token' });
-        const session = getSession(sessionId, token);
-        if (!session) return json(res, 404, { error: 'Session not found' });
+        const authorizedSession = getSession(sessionId, token);
+        if (!authorizedSession) return json(res, 404, { error: 'Session not found' });
         return json(res, 200, {
           sessionId,
-          messages: session.messages.map((message) => sanitizeMessage(message, token, session))
+          messages: authorizedSession.messages.map((message) => sanitizeMessage(message, token, authorizedSession))
         });
       }
 
       if (req.method === 'POST' && parts[3] === 'messages') {
-        const body = await parseBody(req).catch((error) => ({ __error: error.message }));
-        if (body.__error) return json(res, 400, { error: body.__error });
-        const auth = body.token;
-        const text = typeof body.text === 'string' ? body.text.trim() : '';
+        const parsed = await safeParseBody(req);
+        if (!parsed.ok) return json(res, 400, { error: parsed.error });
+        const auth = parsed.body.token;
+        const text = typeof parsed.body.text === 'string' ? parsed.body.text.trim() : '';
         if (!auth || !text) return json(res, 400, { error: 'token and text are required' });
-        const session = getSession(sessionId, auth);
-        if (!session) return json(res, 404, { error: 'Session not found' });
-        session.messages.push({
+        const authorizedSession = getSession(sessionId, auth);
+        if (!authorizedSession) return json(res, 404, { error: 'Session not found' });
+        authorizedSession.messages.push({
           id: randomId(),
           type: 'text',
           text,
@@ -179,40 +203,40 @@ function createApp({ dataRoot = path.join(process.cwd(), 'uploads') } = {}) {
       }
 
       if (req.method === 'POST' && parts[3] === 'media') {
-        const body = await parseBody(req).catch((error) => ({ __error: error.message }));
-        if (body.__error) return json(res, 400, { error: body.__error });
-        const auth = body.token;
-        const mimeType = typeof body.mimeType === 'string' ? body.mimeType.trim().toLowerCase() : '';
-        const filename = typeof body.filename === 'string' ? body.filename : 'upload';
-        const data = typeof body.data === 'string' ? body.data : '';
+        const parsed = await safeParseBody(req);
+        if (!parsed.ok) return json(res, 400, { error: parsed.error });
+        const auth = parsed.body.token;
+        const mimeType = typeof parsed.body.mimeType === 'string' ? parsed.body.mimeType.trim().toLowerCase() : '';
+        const filename = typeof parsed.body.filename === 'string' ? parsed.body.filename : 'upload';
+        const data = typeof parsed.body.data === 'string' ? parsed.body.data : '';
         if (!auth || !mimeType || !data) return json(res, 400, { error: 'Invalid media payload' });
         const mimeMatch = mimeType.match(/^(image|video)\/([a-z0-9.+-]+)$/);
         if (!mimeMatch) {
           return json(res, 400, { error: 'Only image and video uploads are allowed' });
         }
-        const session = getSession(sessionId, auth);
-        if (!session) return json(res, 404, { error: 'Session not found' });
+        const authorizedSession = getSession(sessionId, auth);
+        if (!authorizedSession) return json(res, 404, { error: 'Session not found' });
         const base64 = data.includes(',') ? data.split(',')[1] : data;
         const mediaId = randomId();
-        const extFromName = path.extname(path.basename(filename)).replace(/^\./, '').toLowerCase();
         const extFromMime = mimeMatch[2].split(/[+;]/)[0].toLowerCase();
-        const ext = [extFromName, extFromMime].find((value) => allowedMediaExtensions.has(value));
+        const ext = allowedMediaExtensions.has(extFromMime) ? extFromMime : null;
         if (!ext) return json(res, 400, { error: 'Unsupported media type' });
         const safeMimeType = extensionToMime[ext];
         const sessionDir = path.join(dataRoot, sessionId);
         await fsp.mkdir(sessionDir, { recursive: true });
         const mediaPath = path.join(sessionDir, `${mediaId}.${ext}`);
         await fsp.writeFile(mediaPath, Buffer.from(base64, 'base64'));
+        const safeFilename = path.basename(filename).replace(/[^\w.\- ]/g, '_').slice(0, 120) || `upload.${ext}`;
 
-        session.media.set(mediaId, {
+        authorizedSession.media.set(mediaId, {
           id: mediaId,
-          filename,
+          filename: safeFilename,
           mimeType: safeMimeType,
           ownerToken: auth,
           path: mediaPath,
           deletedAt: null
         });
-        session.messages.push({
+        authorizedSession.messages.push({
           id: randomId(),
           type: 'media',
           mediaId,
@@ -223,13 +247,13 @@ function createApp({ dataRoot = path.join(process.cwd(), 'uploads') } = {}) {
       }
 
       if (req.method === 'DELETE' && parts[3] === 'media' && parts[4]) {
-        const body = await parseBody(req).catch((error) => ({ __error: error.message }));
-        if (body.__error) return json(res, 400, { error: body.__error });
-        const auth = body.token;
+        const parsed = await safeParseBody(req);
+        if (!parsed.ok) return json(res, 400, { error: parsed.error });
+        const auth = parsed.body.token;
         const mediaId = parts[4];
-        const session = getSession(sessionId, auth);
-        if (!session) return json(res, 404, { error: 'Session not found' });
-        const media = session.media.get(mediaId);
+        const authorizedSession = getSession(sessionId, auth);
+        if (!authorizedSession) return json(res, 404, { error: 'Session not found' });
+        const media = authorizedSession.media.get(mediaId);
         if (!media || media.deletedAt) return json(res, 404, { error: 'Media not found' });
         if (media.ownerToken !== auth) return json(res, 403, { error: 'Not allowed' });
         media.deletedAt = new Date().toISOString();
@@ -243,7 +267,7 @@ function createApp({ dataRoot = path.join(process.cwd(), 'uploads') } = {}) {
     if (parts[0] === 'media' && parts[1] && parts[2] && req.method === 'GET') {
       const session = sessions.get(parts[1]);
       const token = url.searchParams.get('token');
-      if (!session || !token || !session.participants.includes(token)) {
+      if (!session || !token || !session.participants.some((participant) => participant && participant.token === token)) {
         res.writeHead(404);
         res.end('Not found');
         return;
