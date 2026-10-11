@@ -23,6 +23,7 @@ beforeEach(() => {
   store = new ChatStore(":memory:");
   directory = mkdtempSync(path.join(os.tmpdir(), "pchat-upload-"));
   vi.stubEnv("PCHAT_DATA_DIR", directory);
+  vi.stubEnv("PCHAT_STORAGE", "local");
   vi.stubEnv("AUTH_URL", base);
   vi.stubEnv("AUTH_SECRET", "unit-test-secret");
   vi.stubEnv("AUTH_GOOGLE_ID", "unit-test-client");

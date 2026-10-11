@@ -10,7 +10,21 @@
     "typecheck": "next typegen && tsc --noEmit",
     "test": "vitest run",
     "test:watch": "vitest",
-    "test:http": "node scripts/chat-smoke.mjs"
+    "test:http": "node scripts/chat-smoke.mjs",
+    "test:cloudflare": "node scripts/chat-smoke.mjs --cloudflare",
+    "cf:login": "wrangler login",
+    "cf:whoami": "wrangler whoami",
+    "r2:create:dev": "wrangler r2 bucket create pchat-dev-media --config wrangler.d1.json --env development --update-config=false",
+    "r2:create:prod": "wrangler r2 bucket create pchat-prod-media --config wrangler.d1.json --env production --update-config=false",
+    "r2:list": "wrangler r2 bucket list --config wrangler.d1.json",
+    "r2:verify:dev": "wrangler r2 bucket dev-url get pchat-dev-media --config wrangler.d1.json --env development && wrangler r2 bucket domain list pchat-dev-media --config wrangler.d1.json --env development",
+    "r2:verify:prod": "wrangler r2 bucket dev-url get pchat-prod-media --config wrangler.d1.json --env production && wrangler r2 bucket domain list pchat-prod-media --config wrangler.d1.json --env production",
+    "d1:setup": "node scripts/setup-d1.mjs",
+    "d1:migrate:local": "wrangler d1 migrations apply pchat-dev --config wrangler.d1.json --env development --local",
+    "d1:migrate:dev": "wrangler d1 migrations apply pchat-dev --config wrangler.d1.json --env development --remote",
+    "d1:migrate:prod": "wrangler d1 migrations apply pchat-prod --config wrangler.d1.json --env production --remote",
+    "d1:verify:dev": "wrangler d1 execute pchat-dev --config wrangler.d1.json --env development --remote --command \"SELECT name FROM sqlite_master WHERE type='table' AND name IN ('users','chats','members','messages','attachments') ORDER BY name\"",
+    "d1:verify:prod": "wrangler d1 execute pchat-prod --config wrangler.d1.json --env production --remote --command \"SELECT name FROM sqlite_master WHERE type='table' AND name IN ('users','chats','members','messages','attachments') ORDER BY name\""
   },
   "dependencies": {
     "file-type": "^21.3.4",
@@ -20,6 +34,7 @@
     "react-dom": "19.3.0"
   },
   "devDependencies": {
+    "@cloudflare/workers-types": "5.20261011.1",
     "@tailwindcss/turbopack": "^4",
     "@testing-library/react": "^16.3.3",
     "@types/node": "^22.20.5",
@@ -30,7 +45,8 @@
     "jsdom": "^26.1.0",
     "tailwindcss": "^4",
     "typescript": "^5",
-    "vitest": "^4.1.11"
+    "vitest": "^4.1.11",
+    "wrangler": "4.149.0"
   },
   "engines": {
     "node": ">=22.13.0"

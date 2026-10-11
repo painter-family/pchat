@@ -3,6 +3,8 @@ import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { mkdirSync } from "node:fs";
 import path from "node:path";
 import type { ChatMessage, ChatSummary, ChatUser } from "./chat-types";
+import { storageBackend, cloudStorage } from "./cloudflare-storage";
+import type { D1ChatStore } from "./d1-chat-store";
 
 export class ChatError extends Error {
   constructor(message: string, public status = 400) { super(message); this.name = "ChatError"; }
@@ -173,8 +175,16 @@ export function dataDirectory() {
   // User data is created at runtime and must never be traced into deployment files.
   return path.resolve(/* turbopackIgnore: true */ process.env.PCHAT_DATA_DIR || path.join(process.cwd(), "data"));
 }
-const globalStore = globalThis as typeof globalThis & { pchatStore?: ChatStore };
-export function chatStore() {
+const globalStore = globalThis as typeof globalThis & { pchatStore?: ChatStore; pchatD1Store?: Promise<D1ChatStore> };
+export async function chatStore(): Promise<ChatStore | D1ChatStore> {
+  if (storageBackend() === "cloudflare") {
+    if (!globalStore.pchatD1Store) {
+      globalStore.pchatD1Store = Promise.all([cloudStorage(), import("./d1-chat-store")])
+        .then(([bindings, { D1ChatStore }]) => new D1ChatStore(bindings.DB))
+        .catch((error) => { globalStore.pchatD1Store = undefined; throw error; });
+    }
+    return globalStore.pchatD1Store;
+  }
   if (!globalStore.pchatStore) {
     mkdirSync(dataDirectory(), { recursive: true });
     globalStore.pchatStore = new ChatStore(path.join(dataDirectory(), "pchat.sqlite"));

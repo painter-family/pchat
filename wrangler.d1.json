@@ -1,0 +1,42 @@
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  "name": "pchat",
+  "account_id": "5d7259244f5b058b9dd5c0d973dfbd5b",
+  "compatibility_date": "2026-10-10",
+  "env": {
+    "development": {
+      "r2_buckets": [
+        {
+          "binding": "MEDIA",
+          "bucket_name": "pchat-dev-media",
+          "remote": true
+        }
+      ],
+      "d1_databases": [
+        {
+          "binding": "DB",
+          "database_name": "pchat-dev",
+          "database_id": "33b3854c-d747-433c-93af-45790d55da06",
+          "migrations_dir": "migrations",
+          "remote": true
+        }
+      ]
+    },
+    "production": {
+      "r2_buckets": [
+        {
+          "binding": "MEDIA",
+          "bucket_name": "pchat-prod-media"
+        }
+      ],
+      "d1_databases": [
+        {
+          "binding": "DB",
+          "database_name": "pchat-prod",
+          "database_id": "27a505bc-45a2-43dc-a108-bf9ce9866922",
+          "migrations_dir": "migrations"
+        }
+      ]
+    }
+  }
+}

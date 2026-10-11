@@ -11,5 +11,5 @@ export async function AccountPanel() {
   const configured = isGoogleAuthConfigured();
   const user = await currentChatUser();
   if (!user) return <Welcome configured={configured} />;
-  return <ChatWorkspace user={user} initialChats={chatStore().listChats(user.id)} />;
+  return <ChatWorkspace user={user} initialChats={await (await chatStore()).listChats(user.id)} />;
 }

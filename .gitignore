@@ -37,3 +37,9 @@ next-env.d.ts
 
 # private chat database and uploaded media
 /data/
+
+# Cloudflare local credentials and local resource state
+.dev.vars*
+.env.production*
+.env.development*
+/.wrangler/

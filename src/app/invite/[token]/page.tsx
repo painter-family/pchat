@@ -15,7 +15,7 @@ async function Invitation({ params }: { params: Promise<{ token: string }> }) {
   if (!user) return <Welcome configured={isGoogleAuthConfigured()} returnTo={`/invite/${token}`} invitation />;
   let invite;
   let errorMessage;
-  try { invite = chatStore().invitation(token, user.id); }
+  try { invite = await (await chatStore()).invitation(token, user.id); }
   catch (error) { if (!isChatError(error)) throw error; errorMessage = error.message; }
   if (invite?.joined) redirect(`/chat/${invite.id}`);
   return (

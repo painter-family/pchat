@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { randomBytes } from "node:crypto";
+import { randomBytes, randomUUID } from "node:crypto";
 import { mkdtempSync, rmSync, existsSync } from "node:fs";
 import { once } from "node:events";
 import { spawn } from "node:child_process";
@@ -9,16 +9,20 @@ import { setTimeout as sleep } from "node:timers/promises";
 import { encode } from "next-auth/jwt";
 import { JSDOM } from "jsdom";
 
-// Uses an isolated database, signing key, and test sessions. It never reads Google credentials.
-assert.ok(existsSync(".next/BUILD_ID"), "Run npm run build before this HTTP check.");
+// Uses test sessions, never Google credentials. Cloud mode writes only development
+// resources with unique probe users and removes those users/chats/objects afterward.
+const cloud = process.argv.includes("--cloudflare");
+if (!cloud) assert.ok(existsSync(".next/BUILD_ID"), "Run npm run build before this HTTP check.");
 const directory = mkdtempSync(path.join(os.tmpdir(), "pchat-http-"));
 const port = 3107;
 const base = `http://localhost:${port}`;
 const secret = randomBytes(48).toString("base64url");
-const server = spawn(process.execPath, ["node_modules/next/dist/bin/next", "start", "--port", String(port)], {
+const probe = "pchat-probe-" + randomUUID();
+const actorId = (name) => `${probe}-${name}`;
+const server = spawn(process.execPath, ["node_modules/next/dist/bin/next", cloud ? "dev" : "start", "--port", String(port)], {
   env: { ...process.env, AUTH_URL: base, AUTH_SECRET: secret,
     AUTH_GOOGLE_ID: "http-test.apps.googleusercontent.com", AUTH_GOOGLE_SECRET: "http-test-only",
-    PCHAT_DATA_DIR: directory }, stdio: ["ignore", "pipe", "pipe"],
+    PCHAT_STORAGE: cloud ? "cloudflare" : "local", PCHAT_DATA_DIR: directory }, stdio: ["ignore", "pipe", "pipe"],
 });
 let serverError;
 let serverLog = "";
@@ -27,7 +31,7 @@ server.stderr.on("data", (chunk) => { serverLog = (serverLog + chunk).slice(-120
 server.on("error", (error) => { serverError = error; });
 
 async function cookie(id, name) {
-  const token = await encode({ secret, salt: "authjs.session-token", token: { sub: id, name, email: `${id}@example.com` } });
+  const token = await encode({ secret, salt: "authjs.session-token", token: { sub: actorId(id), name, email: `${id}@example.com` } });
   return `authjs.session-token=${token}`;
 }
 async function request(url, cookieValue, options = {}) {
@@ -52,7 +56,7 @@ async function sendMessage(id, cookieValue, text, filename, bytes, type) {
 
 try {
   let ready = false;
-  for (let i = 0; i < 80; i++) {
+  for (let i = 0; i < 240; i++) {
     if (serverError || server.exitCode !== null) throw serverError || new Error("Test server exited. Ensure port 3107 is free.");
     try { ready = (await fetch(base + "/api/chats")).status === 401; } catch {}
     if (ready) break;
@@ -63,7 +67,7 @@ try {
   const bob = await cookie("bob", "Bob");
   const eve = await cookie("eve", "Eve");
   const created = await request("/api/chats", alice, { method: "POST" });
-  assert.equal(created.status, 201);
+  assert.equal(created.status, 201, await created.clone().text());
   const { id, token } = await created.json();
   const anonymousInvite = await request(`/invite/${token}`);
   assert.ok((await anonymousInvite.text()).includes("Sign in with Google"));
@@ -100,6 +104,7 @@ try {
     assert.ok((await page.text()).includes("Chat navigation"));
   }
   console.log("HTTP chat checks passed: invitations, two participants, both message directions, private image/video uploads, byte ranges, saved history and sidebar pages.");
+  if (cloud) assert.equal(existsSync(path.join(directory, "pchat.sqlite")), false, "Cloud mode must not create local chat storage.");
 } catch (error) {
   console.error(serverLog.replaceAll(secret, "[redacted]"));
   throw error;
@@ -109,4 +114,21 @@ try {
     await Promise.race([once(server, "exit"), sleep(3000)]);
   }
   rmSync(directory, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
+  if (cloud) {
+    const { getPlatformProxy } = await import("wrangler");
+    const proxy = await getPlatformProxy({ configPath: "wrangler.d1.json", environment: "development", remoteBindings: true, envFiles: [] });
+    try {
+      const { results } = await proxy.env.DB.prepare(`SELECT a.storage_name FROM attachments a
+        JOIN messages m ON m.id=a.message_id JOIN chats c ON c.id=m.chat_id WHERE c.owner_id=?`).bind(actorId("alice")).all();
+      for (const row of results) await proxy.env.MEDIA.delete(row.storage_name);
+      await proxy.env.DB.batch([
+        proxy.env.DB.prepare("DELETE FROM attachments WHERE message_id IN (SELECT id FROM messages WHERE chat_id IN (SELECT id FROM chats WHERE owner_id=?))").bind(actorId("alice")),
+        proxy.env.DB.prepare("DELETE FROM messages WHERE chat_id IN (SELECT id FROM chats WHERE owner_id=?)").bind(actorId("alice")),
+        proxy.env.DB.prepare("DELETE FROM members WHERE chat_id IN (SELECT id FROM chats WHERE owner_id=?)").bind(actorId("alice")),
+        proxy.env.DB.prepare("DELETE FROM chats WHERE owner_id=?").bind(actorId("alice")),
+        proxy.env.DB.prepare("DELETE FROM users WHERE id IN (?,?,?)").bind(actorId("alice"),actorId("bob"),actorId("eve")),
+      ]);
+      console.log("Removed development D1/R2 probe data.");
+    } finally { await proxy.dispose(); }
+  }
 }

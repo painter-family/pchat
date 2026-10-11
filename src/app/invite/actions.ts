@@ -9,7 +9,7 @@ export async function joinInvitation(token: string) {
   const user = await currentChatUser();
   if (!user) redirect(`/invite/${token}`);
   let id;
-  try { id = chatStore().joinChat(token, user); }
+  try { id = await (await chatStore()).joinChat(token, user); }
   catch (error) { if (isChatError(error)) redirect(`/invite/${token}`); throw error; }
   redirect(`/chat/${id}`);
 }

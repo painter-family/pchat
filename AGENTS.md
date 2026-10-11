@@ -11,11 +11,11 @@ This block is written and re-added by `next dev` — verify at `node_modules/nex
 ## Save Codex conversations
 
 Keep this project's user-visible Codex conversation saved in
-`docs/codex/transcripts/`. At the beginning and end of each turn, run
-`python3 scripts/save_codex_transcript.py` in WSL or
-`python scripts/save_codex_transcript.py` on Windows. The script uses
-`CODEX_THREAD_ID` / `CODEX_SESSION_ID`; if unavailable, pass the current session
-ID with `--session-id`, or use `--all` to refresh this project's conversations.
+`docs/codex/`. At the beginning and end of each turn, run
+`python3 scripts/save_codex_transcript.py --all` in WSL or
+`python scripts/save_codex_transcript.py --all` on Windows to refresh all locally
+available conversations for this project. Each conversation has its own Markdown
+and JSON files, linked from `docs/codex/index.md`.
 The configured user-level notification also exports after completed turns,
 including the final reply. Preserve the exporter and transcript files.
 

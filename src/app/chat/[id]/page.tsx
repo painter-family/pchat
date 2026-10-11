@@ -12,10 +12,10 @@ async function Conversation({ params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
   const user = await currentChatUser();
   if (!user) return <Welcome configured={isGoogleAuthConfigured()} returnTo={`/chat/${id}`} />;
-  const store = chatStore();
-  try { store.requireMember(id, user.id); }
+  const store = await chatStore();
+  try { await store.requireMember(id, user.id); }
   catch (error) { if (isChatError(error)) notFound(); throw error; }
-  return <ChatWorkspace user={user} initialChats={store.listChats(user.id)} selectedId={id} />;
+  return <ChatWorkspace user={user} initialChats={await store.listChats(user.id)} selectedId={id} />;
 }
 
 export default function ChatPage(props: { params: Promise<{ id: string }> }) {

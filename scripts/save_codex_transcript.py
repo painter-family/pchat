@@ -11,7 +11,7 @@ import sys
 import time
 
 PROJECT = Path(__file__).resolve().parent.parent
-OUTPUT = PROJECT / "docs" / "codex" / "transcripts"
+OUTPUT = PROJECT / "docs" / "codex"
 
 
 def normalized(path):

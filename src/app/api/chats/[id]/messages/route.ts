@@ -1,25 +1,25 @@
 import { chatApi } from "@/lib/chat-api";
-import { ChatError, chatStore, type StoredAttachment } from "@/lib/chat-store";
+import { ChatError, isChatError, chatStore, type StoredAttachment } from "@/lib/chat-store";
 import { discardUpload, limitedFormData, saveUpload } from "@/lib/chat-media";
 
 export async function GET(request: Request, { params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
-  return chatApi(request, false, (user) => {
+  return chatApi(request, false, async (user) => {
     const query = new URL(request.url).searchParams;
     const after = Number(query.get("after") || 0);
     const before = Number(query.get("before") || 0);
     if (![after, before].every((value) => Number.isSafeInteger(value) && value >= 0) || (after && before)) {
       throw new ChatError("Invalid message cursor.");
     }
-    return Response.json({ messages: chatStore().messages(id, user.id, { after, before }) });
+    return Response.json({ messages: await (await chatStore()).messages(id, user.id, { after, before }) });
   });
 }
 
 export async function POST(request: Request, { params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
   return chatApi(request, true, async (user) => {
-    const store = chatStore();
-    store.requireMember(id, user.id);
+    const store = await chatStore();
+    await store.requireMember(id, user.id);
     const form = await limitedFormData(request);
     const text = form.get("text");
     const clientKey = form.get("clientKey");
@@ -31,11 +31,13 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
     let attachment: StoredAttachment | undefined;
     try {
       if (file instanceof File) attachment = await saveUpload(file);
-      const result = store.sendMessage(id, user, text, clientKey, attachment);
+      const result = await store.sendMessage(id, user, text, clientKey, attachment);
       if (!result.inserted && attachment) await discardUpload(attachment);
       return Response.json({ id: result.id }, { status: result.inserted ? 201 : 200 });
     } catch (error) {
-      if (attachment) await discardUpload(attachment);
+      // A network failure can happen after D1 committed. Keep the object on an
+      // uncertain outcome rather than breaking a message that already saved.
+      if (attachment && isChatError(error)) await discardUpload(attachment);
       throw error;
     }
   });
