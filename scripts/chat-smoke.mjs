@@ -1,8 +1,8 @@
 import assert from "node:assert/strict";
 import { randomBytes, randomUUID } from "node:crypto";
-import { mkdtempSync, rmSync, existsSync } from "node:fs";
+import { mkdtempSync, rmSync, existsSync, readFileSync, writeFileSync } from "node:fs";
 import { once } from "node:events";
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import os from "node:os";
 import path from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
@@ -12,14 +12,32 @@ import { JSDOM } from "jsdom";
 // Uses test sessions, never Google credentials. Cloud mode writes only development
 // resources with unique probe users and removes those users/chats/objects afterward.
 const cloud = process.argv.includes("--cloudflare");
-if (!cloud) assert.ok(existsSync(".next/BUILD_ID"), "Run npm run build before this HTTP check.");
+const worker = process.argv.includes("--worker");
+assert.ok(!(cloud && worker), "Choose cloud development or isolated Worker preview.");
+if (worker) assert.ok(existsSync(".open-next/worker.js"), "Run npm run build:worker first.");
+else if (!cloud) assert.ok(existsSync(".next/BUILD_ID"), "Run npm run build before this HTTP check.");
 const directory = mkdtempSync(path.join(os.tmpdir(), "pchat-http-"));
 const port = 3107;
 const base = `http://localhost:${port}`;
 const secret = randomBytes(48).toString("base64url");
 const probe = "pchat-probe-" + randomUUID();
 const actorId = (name) => `${probe}-${name}`;
-const server = spawn(process.execPath, ["node_modules/next/dist/bin/next", cloud ? "dev" : "start", "--port", String(port)], {
+let serverArgs = ["node_modules/next/dist/bin/next", cloud ? "dev" : "start", "--port", String(port)];
+if (worker) {
+  const config = JSON.parse(readFileSync("wrangler.preview.json", "utf8"));
+  config.main = path.resolve(config.main);
+  config.assets.directory = path.resolve(config.assets.directory);
+  delete config.$schema;
+  Object.assign(config.vars, { AUTH_SECRET: secret, AUTH_GOOGLE_ID: "http-test.apps.googleusercontent.com", AUTH_GOOGLE_SECRET: "http-test-only" });
+  const configFile = path.join(directory, "wrangler.json");
+  writeFileSync(configFile, JSON.stringify(config));
+  const common = ["--config", configFile, "--persist-to", path.join(directory, "state")];
+  const cli = path.resolve("node_modules/wrangler/bin/wrangler.js");
+  const migration = spawnSync(process.execPath, [cli, "d1", "execute", "pchat-preview", "--local", "--file", path.resolve("migrations/0001_initial.sql"), ...common], { encoding: "utf8" });
+  assert.equal(migration.status, 0, migration.stderr);
+  serverArgs = [cli, "dev", "--local", "--port", String(port), ...common];
+}
+const server = spawn(process.execPath, serverArgs, {
   env: { ...process.env, AUTH_URL: base, AUTH_SECRET: secret,
     AUTH_GOOGLE_ID: "http-test.apps.googleusercontent.com", AUTH_GOOGLE_SECRET: "http-test-only",
     PCHAT_STORAGE: cloud ? "cloudflare" : "local", PCHAT_DATA_DIR: directory }, stdio: ["ignore", "pipe", "pipe"],
@@ -70,7 +88,15 @@ try {
   assert.equal(created.status, 201, await created.clone().text());
   const { id, token } = await created.json();
   const anonymousInvite = await request(`/invite/${token}`);
-  assert.ok((await anonymousInvite.text()).includes("Sign in with Google"));
+  const anonymousHtml = await anonymousInvite.text();
+  if (anonymousInvite.status !== 200) {
+    const errorPage = new JSDOM(anonymousHtml);
+    console.error([...errorPage.window.document.querySelectorAll("h1,h2")].map(el => el.textContent.trim()).join("\n"));
+    errorPage.window.close();
+    await sleep(500);
+  }
+  assert.equal(anonymousInvite.status, 200, `Anonymous invite status ${anonymousInvite.status}; location ${anonymousInvite.headers.get("location")}`);
+  assert.ok(anonymousHtml.includes("Sign in with Google"), `Anonymous invitation has no Google sign-in; body starts ${anonymousHtml.slice(0, 800)}`);
   const invitation = await request(`/invite/${token}`, bob);
   const inviteHtml = await invitation.text();
   const joined = await submitJoin(inviteHtml, token, bob);
@@ -104,16 +130,19 @@ try {
     assert.ok((await page.text()).includes("Chat navigation"));
   }
   console.log("HTTP chat checks passed: invitations, two participants, both message directions, private image/video uploads, byte ranges, saved history and sidebar pages.");
-  if (cloud) assert.equal(existsSync(path.join(directory, "pchat.sqlite")), false, "Cloud mode must not create local chat storage.");
+  if (cloud || worker) assert.equal(existsSync(path.join(directory, "pchat.sqlite")), false, "Cloud mode must not create local chat storage.");
 } catch (error) {
   console.error(serverLog.replaceAll(secret, "[redacted]"));
   throw error;
 } finally {
   if (server.exitCode === null) {
-    server.kill();
+    // Wrangler starts workerd children; stop the whole owned test process tree
+    // before removing its Windows-locked local D1 files.
+    if (worker && process.platform === "win32") spawnSync("taskkill", ["/PID", String(server.pid), "/T", "/F"], { stdio: "ignore" });
+    else server.kill();
     await Promise.race([once(server, "exit"), sleep(3000)]);
   }
-  rmSync(directory, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
+  rmSync(directory, { recursive: true, force: true, maxRetries: 20, retryDelay: 250 });
   if (cloud) {
     const { getPlatformProxy } = await import("wrangler");
     const proxy = await getPlatformProxy({ configPath: "wrangler.d1.json", environment: "development", remoteBindings: true, envFiles: [] });

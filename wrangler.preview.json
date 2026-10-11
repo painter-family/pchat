@@ -1,0 +1,41 @@
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  "name": "pchat-preview",
+  "compatibility_date": "2026-10-10",
+  "main": ".open-next/worker.js",
+  "compatibility_flags": [
+    "nodejs_compat",
+    "global_fetch_strictly_public"
+  ],
+  "assets": {
+    "directory": ".open-next/assets",
+    "binding": "ASSETS"
+  },
+  "workers_dev": false,
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "pchat-preview",
+      "database_id": "00000000-0000-0000-0000-000000000000",
+      "migrations_dir": "migrations"
+    }
+  ],
+  "r2_buckets": [
+    {
+      "binding": "MEDIA",
+      "bucket_name": "pchat-preview-media"
+    }
+  ],
+  "vars": {
+    "PCHAT_STORAGE": "cloudflare",
+    "PCHAT_RUNTIME": "worker",
+    "AUTH_URL": "http://localhost:3107",
+    "AUTH_TRUST_HOST": "true"
+  },
+  "services": [
+    {
+      "binding": "WORKER_SELF_REFERENCE",
+      "service": "pchat-preview"
+    }
+  ]
+}

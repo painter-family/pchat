@@ -265,9 +265,10 @@ For offline mode (`PCHAT_STORAGE=local`):
   Stop the server before copying the entire directory for a backup. Protect
   backups as private user data. Chat content and media are not encrypted at rest.
 
-The current cloud connection runs on a local Node server using Wrangler's
-development binding proxy. This is not yet a deployed Cloudflare Worker: Worker
-deployment still needs a supported Next.js adapter and runtime binding access.
+The local Node server uses Wrangler's development binding proxy. The production
+Worker uses OpenNext and accesses its D1/R2 bindings directly, with
+`PCHAT_RUNTIME=worker`. SQLite and the Wrangler SDK are loaded only by the local
+Node runtime.
 Offline mode requires a persistent disk and does not share history between
 independent server replicas.
 
@@ -324,8 +325,8 @@ or a development server and build in the same checkout.
 
 D1 provisioning is separate from application deployment. The local app now
 connects to the development D1 database through Wrangler. Offline mode can
-still use `node:sqlite`. A deployed Worker requires the deployment/runtime
-adapter described above.
+still use `node:sqlite`. The deployed Worker uses the OpenNext adapter and
+the production bindings below.
 
 [`wrangler.d1.json`](wrangler.d1.json) contains the database environments:
 
@@ -335,7 +336,7 @@ adapter described above.
 | `production` | `pchat-prod` | `DB` | Local simulation unless explicitly accessed remotely |
 
 There is no default database binding: choose an environment explicitly. This
-file manages D1 and R2 assets and is not yet a Worker deployment configuration.
+file manages D1/R2 assets and the production Worker deployment configuration.
 The database/account IDs are identifiers, not credentials, and may be committed.
 The initial migration in `migrations/0001_initial.sql` creates `users`, `chats`,
 `members`, `messages`, and `attachments`, plus the app's two indexes. It creates
@@ -405,6 +406,96 @@ may use ignored `.dev.vars*` files. Production `AUTH_GOOGLE_SECRET` and
 `AUTH_SECRET` belong in Cloudflare Worker secrets when the Worker is configured.
 Development and production should have separate session secrets and OAuth
 settings matching their respective callback URLs.
+
+### Production authentication secrets
+
+Use encrypted **Worker secrets** on the Worker named `pchat-production` in this
+account. They fit Auth.js's environment variables directly. Cloudflare's separate
+account-level **Secrets Store** is useful for credentials shared among services;
+it uses bindings whose values must be fetched asynchronously and is not required
+for this app. Do not put secret values in Wrangler `vars` or `NEXT_PUBLIC_*`.
+
+| Name | Purpose |
+| --- | --- |
+| `AUTH_SECRET` | Random production session encryption key, separate from the local key |
+| `AUTH_GOOGLE_ID` | Google Web application OAuth client ID (public identifier, stored alongside the credentials) |
+| `AUTH_GOOGLE_SECRET` | Matching Google OAuth client secret |
+
+The initial setup reuses the existing Google client and generates a new production
+session key. Google's user access tokens are obtained during sign-in; do not put
+an individual user's access token in Worker configuration. The current app uses
+Google for login and does not persist Google API access or refresh tokens.
+
+For a fresh setup, prepare an ignored local file:
+
+```bash
+npm run secrets:prepare:prod
+```
+
+Fill `AUTH_GOOGLE_ID` and `AUTH_GOOGLE_SECRET` in `.env.production.local` using
+the Google client you want for production. To copy the existing local Google
+client during preparation instead, use
+`npm run secrets:prepare:prod -- --reuse-google`. Preparation refuses to overwrite
+an existing file. Never paste the file or its values into chat, Git, or terminal
+command arguments.
+
+Upload and verify:
+
+```bash
+npm run secrets:upload:prod
+npm run secrets:list:prod
+```
+
+The upload command validates the three names, rejects reuse of the local session
+key, and sends only those three values through stdin to Wrangler. It creates a
+placeholder Worker if `pchat-production` does not exist. It does not deploy the
+Next.js application or attach a domain. The list command shows names and types,
+not values. Future deployments must target this same Worker name and account.
+Keep a private backup: Cloudflare does not let you read the secret values back.
+
+To rotate a credential, edit the ignored production file and rerun the upload
+command. Replacing `AUTH_SECRET` signs existing production users out. If the app
+is deployed, updating secrets with this command takes effect immediately.
+
+The production hostname is `painter-family.info`. The production environment
+in `wrangler.d1.json` declares these ordinary runtime variables:
+
+```text
+AUTH_URL=https://painter-family.info
+AUTH_TRUST_HOST=true
+PCHAT_STORAGE=cloudflare
+```
+
+These are configuration, not secrets. Register
+`https://painter-family.info/api/auth/callback/google` as an authorized redirect URI
+in the same Google OAuth client. When reusing the local client, retain its
+`http://localhost:3000/api/auth/callback/google` redirect URI. Register the
+production HTTPS origin `https://painter-family.info` if you use authorized
+JavaScript origins, and complete Google's consent-screen audience/publishing
+settings for the intended users. In Google Cloud Console, open Google Auth
+Platform → Clients (or APIs & Services → Credentials), select the existing Web
+application client matching `AUTH_GOOGLE_ID`, add the production redirect URI,
+and save. The localhost URI should remain for local testing.
+
+Deployment uses the OpenNext Cloudflare adapter and runtime storage bindings. In production, bind `DB` to `pchat-prod` and `MEDIA` to
+`pchat-prod-media`; these bindings require no database password or R2 API token.
+The deployed runtime uses direct Worker bindings; the local Node development
+server continues to use its Wrangler development proxy. With Node.js compatibility enabled, Worker secrets can
+be available through `process.env` for Auth.js. Attach the app hostname to the
+Worker as a Custom Domain; keep the media bucket private. The production config
+prepares `painter-family.info` as that Custom Domain and disables workers.dev
+and preview URLs so the production login origin stays consistent. These settings
+take effect when the actual application is deployed; preparing this config does
+not change DNS or attach the placeholder Worker to your domain.
+
+A `CLOUDFLARE_API_TOKEN`, if used for automated deployment, belongs in your CI
+secret store. It is a deployment credential, not a token the running chat app
+needs. Interactive deployment can continue to use Wrangler browser login.
+
+References: [Worker secrets](https://developers.cloudflare.com/workers/configuration/secrets/),
+[Secrets Store](https://developers.cloudflare.com/secrets-store/),
+[Next.js adapter](https://opennext.js.org/cloudflare/get-started),
+[Worker custom domains](https://developers.cloudflare.com/workers/configuration/routing/custom-domains/).
 
 References: [D1 setup](https://developers.cloudflare.com/d1/get-started/),
 [D1 migrations](https://developers.cloudflare.com/d1/reference/migrations/),
@@ -498,3 +589,89 @@ with backups named `config.toml.before-pchat-transcripts`. These machine setting
 are outside the repository. A different computer needs its own `notify` command
 pointing to this script and its local Python executable; see the
 [Codex advanced configuration guide](https://learn.chatgpt.com/docs/config-file/config-advanced).
+
+
+## Deploy the application to Cloudflare Workers
+
+The production Worker is `pchat-production`, serving
+`https://painter-family.info`, with the production D1 database and private R2
+media bucket. The adapter is pinned to `@opennextjs/cloudflare` 1.20.10. A tracked
+`patch-package` compatibility patch includes Next.js 16.4's `preview-props.json`
+in the adapter's inlined manifest set; without it the Worker fails at startup.
+`npm install` and `npm ci` apply it through `postinstall`. Recheck the patch when
+upgrading the adapter. Worker builds disable staged Cache Components and partial
+prefetching because their request-bound timers fail in workerd; the app uses
+ordinary dynamic rendering there. The local Next.js development configuration
+keeps those options enabled.
+
+Before deployment, confirm the existing Google Web OAuth client has the redirect
+URI `https://painter-family.info/api/auth/callback/google`. Keep its localhost
+callback for development. The three authentication secrets must exist on
+`pchat-production` as described above; the production session key is different
+from the local key. No Cloudflare API token is needed by the running app.
+
+Stop `npm run dev` before building: Next.js development and production builds
+share `.next`. With Node 22.13 or newer and dependencies installed:
+
+```bash
+npm run cf:whoami
+npm run secrets:list:prod
+npm run lint
+npm run typecheck
+npm test
+npm run build:worker
+npm run test:worker
+npm run deploy:worker
+```
+
+`deploy:worker` builds again, applies pending migrations to remote `pchat-prod`,
+checks the output for credentials, and deploys to the explicitly selected
+production environment. The Custom Domain configuration makes Cloudflare manage
+DNS and HTTPS for `painter-family.info`; no manual A record is required. It does
+not attach `www.painter-family.info`. The production Worker disables workers.dev
+and preview URLs. The local development DB and media bucket are independent.
+
+`build:worker` runs the Next.js/OpenNext build, removes OpenNext's copied `.env`
+values and files from the Worker output, and fails if any configured local
+credential value remains. Production values come from Worker secrets/variables.
+Use this command instead of invoking the adapter build directly. `.open-next`
+and all real secret files are ignored by Git. Run `npm run check:worker` to
+repeat the artifact check before a manual deployment.
+
+`test:worker` runs the packaged application in Wrangler's local Workers runtime
+on port 3107, using temporary simulated D1/R2 resources and generated test session
+cookies. It checks invitations, both message directions, private image/video
+uploads, video byte ranges, history, and navigation. It uses no Google
+credentials and writes no development or production cloud data.
+
+For manual local Worker preview:
+
+```bash
+npm run preview:migrate
+npm run preview:worker
+```
+
+This uses `wrangler.preview.json` with local simulations, not production storage.
+Supply local preview authentication values in ignored `.dev.vars` if you want
+Google browser sign-in; set `AUTH_URL=http://localhost:3107` there and register
+`http://localhost:3107/api/auth/callback/google` in the OAuth client. The usual
+`npm run dev` still uses port 3000 and remote development D1/R2.
+
+After deployment, run `npm run verify:production` to check HTTPS, static assets,
+private routes, and the server-generated Google authorization redirect. If the
+ignored production secret file is present, it also checks an authenticated D1
+read using a unique temporary session identity; it writes no chat data.
+
+Visit `https://painter-family.info`, sign in with Google, create
+an invitation, and have a second account join to verify the full browser OAuth
+flow. `npm run secrets:list:prod` verifies names only, not OAuth registration or
+Google consent-screen audience settings. Worker logs are available with:
+
+```bash
+npx wrangler tail --config wrangler.d1.json --env production
+```
+
+Future redeployments keep the encrypted secrets. Rotate them by editing the
+ignored production file and running `npm run secrets:upload:prod`. A rotation of
+`AUTH_SECRET` invalidates existing sessions. Schema updates go in new ordered
+migration files; the deploy command applies them before uploading code.

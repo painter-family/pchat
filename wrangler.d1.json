@@ -20,6 +20,12 @@
           "migrations_dir": "migrations",
           "remote": true
         }
+      ],
+      "services": [
+        {
+          "binding": "WORKER_SELF_REFERENCE",
+          "service": "pchat-development"
+        }
       ]
     },
     "production": {
@@ -36,7 +42,37 @@
           "database_id": "27a505bc-45a2-43dc-a108-bf9ce9866922",
           "migrations_dir": "migrations"
         }
+      ],
+      "name": "pchat-production",
+      "vars": {
+        "AUTH_URL": "https://painter-family.info",
+        "AUTH_TRUST_HOST": "true",
+        "PCHAT_STORAGE": "cloudflare",
+        "PCHAT_RUNTIME": "worker"
+      },
+      "routes": [
+        {
+          "pattern": "painter-family.info",
+          "custom_domain": true
+        }
+      ],
+      "workers_dev": false,
+      "preview_urls": false,
+      "services": [
+        {
+          "binding": "WORKER_SELF_REFERENCE",
+          "service": "pchat-production"
+        }
       ]
     }
+  },
+  "main": ".open-next/worker.js",
+  "compatibility_flags": [
+    "nodejs_compat",
+    "global_fetch_strictly_public"
+  ],
+  "assets": {
+    "directory": ".open-next/assets",
+    "binding": "ASSETS"
   }
 }

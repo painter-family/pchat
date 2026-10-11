@@ -1,4 +1,5 @@
-import { DatabaseSync } from "node:sqlite";
+import type { DatabaseSync } from "node:sqlite";
+import { createRequire } from "node:module";
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { mkdirSync } from "node:fs";
 import path from "node:path";
@@ -24,6 +25,8 @@ export class ChatStore {
   readonly db: DatabaseSync;
 
   constructor(filename: string) {
+    // SQLite is only loaded for the offline Node server. Workers use D1.
+    const { DatabaseSync } = createRequire(path.join(process.cwd(), "package.json"))("node:sqlite") as typeof import("node:sqlite");
     this.db = new DatabaseSync(filename);
     this.db.exec(`
       PRAGMA journal_mode = WAL;
@@ -177,6 +180,9 @@ export function dataDirectory() {
 }
 const globalStore = globalThis as typeof globalThis & { pchatStore?: ChatStore; pchatD1Store?: Promise<D1ChatStore> };
 export async function chatStore(): Promise<ChatStore | D1ChatStore> {
+  if (process.env.PCHAT_RUNTIME === "worker" && storageBackend() !== "cloudflare") {
+    throw new Error("Cloudflare Workers require D1/R2 storage.");
+  }
   if (storageBackend() === "cloudflare") {
     if (!globalStore.pchatD1Store) {
       globalStore.pchatD1Store = Promise.all([cloudStorage(), import("./d1-chat-store")])

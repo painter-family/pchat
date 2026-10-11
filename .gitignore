@@ -43,3 +43,6 @@ next-env.d.ts
 .env.production*
 .env.development*
 /.wrangler/
+
+# Cloudflare Worker build output
+/.open-next/
