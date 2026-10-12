@@ -20,7 +20,7 @@ npm run cf:login
 npm run dev
 ```
 
-Open http://localhost:3000. In WSL, use a Linux Node installation or run
+Open [Local app](http://localhost:3000). In WSL, use a Linux Node installation or run
 these npm commands with the Windows Node tooling available on your PATH.
 
 Keep Google OAuth credentials and `AUTH_URL=http://localhost:3000` in the ignored
@@ -173,7 +173,7 @@ HTTP 503. These environment names follow the
 
 ### 4. Verify login
 
-1. Open http://localhost:3000 in a normal browser.
+1. Open [Local app](http://localhost:3000) in a normal browser.
 2. Click **Sign in with Google**, choose your account, and complete Google's
    consent flow if prompted.
 3. On returning to pchat, check that your name/email and **Sign out** appear.
@@ -209,21 +209,21 @@ and check membership before returning history, accepting messages, or serving
 attachments. Google account IDs identify users; changing a display name or email
 does not change chat ownership.
 
-
 ## Using private chats
 
 1. Sign in with Google and click **New chat**. Your chats appear in the left
    sidebar; select any conversation there to continue it.
 2. In the new conversation, click **Get invitation link**, then **Copy link**.
-   Send that URL to one friend. The link expires after seven days. Making another
-   invitation invalidates the previous link.
+   Send that URL to one friend. The chat has one shared invitation key across all
+   your connections. The link expires after seven days; requesting it again
+   renews that same key.
 3. Your friend opens the URL, signs in with Google, and clicks **Join chat**.
    Google login returns them to the same invitation. Joining is an explicit
    action so previewing a link does not accidentally claim the second seat.
 4. Both people can send messages and attach JPEG, PNG, GIF, WebP images or MP4,
    WebM videos, up to **25 MB per file** and one attachment per message. Browser
    playback depends on the video codec; MP4 with H.264 is widely supported.
-5. Messages refresh every two seconds and the sidebar every three seconds.
+5. Messages and the sidebar update live on all connected devices.
    Reopen a chat to see its saved history. The most recent 100 messages load
    first; **Load older messages** retrieves earlier history.
 
@@ -287,7 +287,7 @@ Additional source files:
 - `src/lib/chat-api.ts`: authenticated requests and mutation origin checks.
 - `src/lib/chat-media.ts`: bounded uploads, format detection, storage, byte ranges.
 - `src/components/chat-workspace.tsx`: sidebar, invitation link, conversation,
-  polling, history pagination, message composer and media previews.
+  live refresh, shared drafts/reading position, history pagination and media previews.
 - `src/app/chat/[id]/page.tsx`: member-only conversation page.
 - `src/app/invite/[token]/page.tsx`: Google login and invitation confirmation.
 - `src/app/api/chats/`: chat creation/listing, invitations and message APIs.
@@ -590,7 +590,6 @@ are outside the repository. A different computer needs its own `notify` command
 pointing to this script and its local Python executable; see the
 [Codex advanced configuration guide](https://learn.chatgpt.com/docs/config-file/config-advanced).
 
-
 ## Deploy the application to Cloudflare Workers
 
 The production Worker is `pchat-production`, serving
@@ -675,3 +674,58 @@ Future redeployments keep the encrypted secrets. Rotate them by editing the
 ignored production file and running `npm run secrets:upload:prod`. A rotation of
 `AUTH_SECRET` invalidates existing sessions. Schema updates go in new ordered
 migration files; the deploy command applies them before uploading code.
+
+
+## Multiple browsers and devices
+
+You can sign in with the same verified Google account in multiple browsers or on
+an iPad at the same time. Each browser keeps its own encrypted login cookie;
+signing out on one device does not sign the others out. Google's stable account
+subject maps to one persistent app user instead of a new user per login.
+
+After signing in, the app opens your saved selected conversation. Selecting a
+conversation on any device updates the selection on your other connections.
+Chat lists, history, images and videos are shared. Text drafts and the reading
+position are saved per user and chat; the other participant cannot read your
+unsent text. Reading position uses a message anchor and a fraction within that
+message so it works with different screen sizes, rather than copying pixel
+coordinates between a desktop and an iPad.
+
+Text edits and scrolling save after a short pause (350 ms). Changing chats or
+sending flushes the text draft first. Suspended connections refresh on resume
+and reconnect, with a 15-second polling fallback. Conflicting stale edits are
+rejected and the latest saved view is restored with a message. Unsent local file
+selections stay on that device; once sent, attachments appear everywhere.
+
+The production Worker uses a SQLite-backed `UserConnections` Durable Object per
+user, with hibernating WebSockets. Connections receive invalidation signals;
+protected HTTP endpoints still authenticate every read and write. Short-lived,
+signed connection tickets travel in the WebSocket protocol header rather than
+in URLs. The connection expires after 30 minutes and reconnects through an
+authenticated ticket request. Node development uses authenticated server-sent
+events for the same fanout behavior. Durable Objects hold no chat history or
+drafts; D1 remains authoritative.
+
+Migration `0002_shared_sessions.sql` adds Google account mappings, legacy login
+aliases, selected conversations, and per-chat draft/reading state. On a verified
+Google sign-in, unclaimed legacy users matching Google's verified email are
+merged without removing chats, messages, or attachment metadata. Accounts
+already linked to a different Google subject are never claimed. Existing signed
+cookies resolve through aliases so open browsers can continue to use their
+history. Sign in again once to establish the persistent Google mapping for
+older accounts.
+
+Invitation keys are derived from the chat ID and the server session secret;
+getting a link on another device does not invalidate the first device's link.
+Older random invitation keys remain valid until their existing expiry or until
+an owner first renews them into the new stable format. Rotating `AUTH_SECRET`
+changes derived invitation keys on their next renewal as well as ending login
+sessions. The two-person membership limit still applies to accounts, regardless
+of how many connections each participant has.
+
+`npm run test:worker` verifies simultaneous connections, shared draft/reading
+state and selection, stale-write rejection, notification isolation, independent
+disconnects, and reconnect catch-up, alongside the existing chat/media checks.
+Production deployment also applies the Durable Object class migration from the
+Wrangler configuration. After deployment, refresh existing browser tabs once
+and sign in with the same Google account on the second device.

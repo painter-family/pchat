@@ -3,6 +3,8 @@
 import { redirect } from "next/navigation";
 import { currentChatUser } from "@/lib/chat-api";
 import { isChatError, chatStore } from "@/lib/chat-store";
+import { userSessions } from "@/lib/user-sessions";
+import { notifyUsers } from "@/lib/chat-live";
 
 export async function joinInvitation(token: string) {
   if (!/^[\w-]{43}$/.test(token)) redirect("/");
@@ -11,5 +13,8 @@ export async function joinInvitation(token: string) {
   let id;
   try { id = await (await chatStore()).joinChat(token, user); }
   catch (error) { if (isChatError(error)) redirect(`/invite/${token}`); throw error; }
+  const sessions = await userSessions();
+  await sessions.selectChat(user, id);
+  await notifyUsers(await sessions.memberIds(id));
   redirect(`/chat/${id}`);
 }

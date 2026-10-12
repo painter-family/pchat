@@ -1,6 +1,8 @@
 import { chatApi } from "@/lib/chat-api";
 import { ChatError, isChatError, chatStore, type StoredAttachment } from "@/lib/chat-store";
 import { discardUpload, limitedFormData, saveUpload } from "@/lib/chat-media";
+import { userSessions } from "@/lib/user-sessions";
+import { notifyUsers } from "@/lib/chat-live";
 
 export async function GET(request: Request, { params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
@@ -33,6 +35,12 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
       if (file instanceof File) attachment = await saveUpload(file);
       const result = await store.sendMessage(id, user, text, clientKey, attachment);
       if (!result.inserted && attachment) await discardUpload(attachment);
+      const sessions = await userSessions();
+      const revision = form.get("draftRevision");
+      if (typeof revision === "string" && /^\d+$/.test(revision) && Number.isSafeInteger(Number(revision))) {
+        await sessions.clearSentDraft(id, user.id, Number(revision), text);
+      }
+      await notifyUsers(await sessions.memberIds(id));
       return Response.json({ id: result.id }, { status: result.inserted ? 201 : 200 });
     } catch (error) {
       // A network failure can happen after D1 committed. Keep the object on an

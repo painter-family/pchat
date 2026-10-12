@@ -1,5 +1,5 @@
 // @vitest-environment node
-import { afterEach, beforeEach, expect, test } from "vitest";
+import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { mkdtempSync, rmSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -9,8 +9,8 @@ const alice = { id: "alice", name: "Alice", email: "alice@example.com" };
 const bob = { id: "bob", name: "Bob", email: "bob@example.com" };
 const eve = { id: "eve", name: "Eve", email: "eve@example.com" };
 let store: ChatStore;
-beforeEach(() => { store = new ChatStore(":memory:"); });
-afterEach(() => store.db.close());
+beforeEach(() => { vi.stubEnv("AUTH_SECRET", "unit-test-invitation-secret"); store = new ChatStore(":memory:"); });
+afterEach(() => { store.db.close(); vi.unstubAllEnvs(); });
 
 test("invitation admits exactly one friend and remains usable by existing members", () => {
   const chat = store.createChat(alice);
@@ -24,12 +24,12 @@ test("invitation admits exactly one friend and remains usable by existing member
   expect(store.listChats(eve.id)).toEqual([]);
 });
 
-test("expired and replaced links cannot admit a new member", () => {
+test("expired links require renewal with the same chat-specific key", () => {
   const chat = store.createChat(alice);
   store.db.prepare("UPDATE chats SET invite_expires=? WHERE id=?").run(Date.now() - INVITE_TTL, chat.id);
   expect(() => store.joinChat(chat.token, bob)).toThrow("expired");
   const replacement = store.refreshInvite(chat.id, alice.id);
-  expect(() => store.joinChat(chat.token, bob)).toThrow("not found");
+  expect(replacement).toBe(chat.token);
   expect(store.joinChat(replacement, bob)).toBe(chat.id);
   expect(() => store.refreshInvite(chat.id, alice.id)).toThrow("two participants");
 });

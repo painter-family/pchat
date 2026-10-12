@@ -63,15 +63,23 @@
           "binding": "WORKER_SELF_REFERENCE",
           "service": "pchat-production"
         }
-      ]
+      ],
+      "durable_objects": {
+        "bindings": [
+          {
+            "name": "USER_CONNECTIONS",
+            "class_name": "UserConnections"
+          }
+        ]
+      }
     }
   },
-  "main": ".open-next/worker.js",
+  "main": "worker.mjs",
   "compatibility_flags": [
     "nodejs_compat",
     "global_fetch_strictly_public"
   ],
-    "observability": {
+  "observability": {
     "logs": {
       "enabled": true,
       "invocation_logs": true,
@@ -81,5 +89,13 @@
   "assets": {
     "directory": ".open-next/assets",
     "binding": "ASSETS"
-  }
+  },
+  "migrations": [
+    {
+      "tag": "v1-user-connections",
+      "new_sqlite_classes": [
+        "UserConnections"
+      ]
+    }
+  ]
 }

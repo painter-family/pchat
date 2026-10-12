@@ -1,6 +1,6 @@
 // @vitest-environment node
 import { afterAll, afterEach, beforeAll, beforeEach, expect, test, vi } from "vitest";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { getPlatformProxy, type PlatformProxy } from "wrangler";
@@ -9,6 +9,7 @@ import { D1ChatStore } from "./d1-chat-store";
 import { auth } from "@/auth";
 import { POST as send } from "@/app/api/chats/[id]/messages/route";
 import { GET as readMedia } from "@/app/api/media/[id]/route";
+import { UserSessions } from "./user-sessions";
 
 vi.mock("@/auth", () => ({ auth: vi.fn() }));
 vi.mock("./cloudflare-storage", () => ({ storageBackend: () => "cloudflare", cloudStorage: async () => proxy.env }));
@@ -30,12 +31,12 @@ beforeAll(async () => {
     d1_databases: [{ binding: "DB", database_name: "test-db", database_id: "test-db" }],
     r2_buckets: [{ binding: "MEDIA", bucket_name: "test-media" }] }));
   proxy = await getPlatformProxy<CloudStorage>({ configPath, remoteBindings: false, persist: false, envFiles: [] });
-  const sql = readFileSync("migrations/0001_initial.sql", "utf8").replace(/--[^\n]*/g, "");
+  const sql = readdirSync("migrations").sort().map(name => readFileSync("migrations/" + name, "utf8")).join("\n").replace(/--[^\n]*/g, "");
   await proxy.env.DB.batch(sql.split(";").map((statement) => statement.trim()).filter(Boolean).map((statement) => proxy.env.DB.prepare(statement)));
   store = new D1ChatStore(proxy.env.DB);
 }, 30000);
 beforeEach(async () => {
-  await proxy.env.DB.batch(["attachments", "messages", "members", "chats", "users"].map((table) => proxy.env.DB.prepare(`DELETE FROM ${table}`)));
+  await proxy.env.DB.batch(["chat_views", "user_views", "user_aliases", "google_accounts", "attachments", "messages", "members", "chats", "users"].map((table) => proxy.env.DB.prepare(`DELETE FROM ${table}`)));
   vi.stubEnv("AUTH_URL", base);
   vi.stubEnv("AUTH_SECRET", "test-secret");
   vi.stubEnv("AUTH_GOOGLE_ID", "test-client");
@@ -55,12 +56,12 @@ test("concurrent invitation claims admit only one friend", async () => {
   expect(await store.db.prepare("SELECT COUNT(*) AS count FROM members WHERE chat_id=?").bind(chat.id).first("count")).toBe(2);
 });
 
-test("expired or replaced invitations cannot claim a seat", async () => {
+test("expired invitations are renewed without replacing their chat key", async () => {
   const chat = await store.createChat(alice);
   await store.db.prepare("UPDATE chats SET invite_expires=0 WHERE id=?").bind(chat.id).run();
   await expect(store.joinChat(chat.token, bob)).rejects.toThrow("expired");
   const replacement = await store.refreshInvite(chat.id, alice.id);
-  await expect(store.joinChat(chat.token, bob)).rejects.toThrow("not found");
+  expect(replacement).toBe(chat.token);
   await store.joinChat(replacement, bob);
   await expect(store.refreshInvite(chat.id, bob.id)).rejects.toThrow("Only the chat creator");
   await expect(store.refreshInvite(chat.id, alice.id)).rejects.toThrow("two participants");
@@ -98,6 +99,35 @@ test("history cursors and each participant's chat list survive reopening the ada
   expect((await reopened.messages(chat.id, bob.id, { before: second.id })).map((message) => message.id)).toEqual([first.id]);
   expect((await reopened.listChats(bob.id))[0].title).toBe("Alice");
   expect(await reopened.listChats(eve.id)).toEqual([]);
+});
+
+test("D1 shares views across sessions and atomically rejects stale draft writers", async () => {
+  const chat = await store.createChat(alice);
+  const sessions = new UserSessions(proxy.env.DB);
+  await sessions.selectChat(alice, chat.id);
+  const attempts = await Promise.allSettled([
+    sessions.updateChatView(chat.id, alice.id, 0, { draft: "Laptop" }),
+    new UserSessions(proxy.env.DB).updateChatView(chat.id, alice.id, 0, { draft: "iPad" }),
+  ]);
+  expect(attempts.filter(attempt => attempt.status === "fulfilled")).toHaveLength(1);
+  const view = await sessions.chatView(chat.id, alice.id);
+  expect(["Laptop", "iPad"]).toContain(view.draft);
+  expect(view.revision).toBe(1);
+  expect((await sessions.userView(alice.id)).selectedChatId).toBe(chat.id);
+});
+
+test("D1 maps repeated Google logins to the same legacy account and keeps history", async () => {
+  const chat = await store.createChat(alice);
+  const second = { ...alice, id: "alice-device-two" };
+  await store.joinChat(chat.token, second);
+  await store.sendMessage(chat.id, second, "Saved on another device", "device-two");
+  const sessions = new UserSessions(proxy.env.DB);
+  const profile = { email: alice.email, name: alice.name, verified: true };
+  const ids = await Promise.all([sessions.googleAccount("subject", profile), sessions.googleAccount("subject", profile)]);
+  expect(ids[0]).toBe(ids[1]);
+  expect(await sessions.canonicalId(second.id)).toBe(ids[0]);
+  expect((await store.messages(chat.id, ids[0]))[0].senderId).toBe(ids[0]);
+  expect(await sessions.memberIds(chat.id)).toEqual([ids[0]]);
 });
 
 test("R2 uploads remain private, support video ranges, and clean up duplicate uploads", async () => {

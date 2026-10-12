@@ -1,11 +1,13 @@
 import type { DatabaseSync } from "node:sqlite";
 import { createRequire } from "node:module";
-import { createHash, randomBytes, randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { mkdirSync } from "node:fs";
 import path from "node:path";
 import type { ChatMessage, ChatSummary, ChatUser } from "./chat-types";
 import { storageBackend, cloudStorage } from "./cloudflare-storage";
 import type { D1ChatStore } from "./d1-chat-store";
+import { SESSION_SCHEMA } from "./session-schema";
+import { chatInvitationKey } from "./chat-invites";
 
 export class ChatError extends Error {
   constructor(message: string, public status = 400) { super(message); this.name = "ChatError"; }
@@ -47,6 +49,7 @@ export class ChatStore {
       CREATE INDEX IF NOT EXISTS messages_chat_id ON messages(chat_id, id);
       CREATE INDEX IF NOT EXISTS members_user_id ON members(user_id);
     `);
+    this.db.exec(SESSION_SCHEMA);
   }
 
   private transaction<T>(fn: () => T): T {
@@ -70,7 +73,7 @@ export class ChatStore {
     return this.transaction(() => {
       this.upsertUser(user);
       const id = randomUUID();
-      const token = randomBytes(32).toString("base64url");
+      const token = chatInvitationKey(id);
       const now = Date.now();
       this.db.prepare("INSERT INTO chats VALUES(?,?,?,?,?)").run(id, user.id, hash(token), now + INVITE_TTL, now);
       this.db.prepare("INSERT INTO members VALUES(?,?)").run(id, user.id);
@@ -86,7 +89,7 @@ export class ChatStore {
       if (Number(this.db.prepare("SELECT COUNT(*) AS n FROM members WHERE chat_id=?").get(chatId)?.n) >= 2) {
         throw new ChatError("This chat already has two participants.", 409);
       }
-      const token = randomBytes(32).toString("base64url");
+      const token = chatInvitationKey(chatId);
       this.db.prepare("UPDATE chats SET invite_hash=?,invite_expires=? WHERE id=?")
         .run(hash(token), Date.now() + INVITE_TTL, chatId);
       return token;
@@ -123,14 +126,22 @@ export class ChatStore {
     return { id, joined: false, name: String(chat.name) };
   }
 
+  currentInvite(chatId: string, userId: string) {
+    this.requireMember(chatId, userId);
+    const row = this.db.prepare("SELECT owner_id,invite_hash,invite_expires FROM chats WHERE id=?").get(chatId);
+    if (row?.owner_id !== userId || Number(row.invite_expires) < Date.now()) return null;
+    const token = chatInvitationKey(chatId);
+    return row.invite_hash === hash(token) ? token : null;
+  }
+
   listChats(userId: string): ChatSummary[] {
-    return this.db.prepare(`SELECT c.id, c.updated_at,
+    return this.db.prepare(`SELECT c.id, c.owner_id, c.updated_at,
       (SELECT u.name FROM members p JOIN users u ON u.id=p.user_id WHERE p.chat_id=c.id AND p.user_id<>?) AS peer,
       (SELECT COUNT(*) FROM members WHERE chat_id=c.id) AS count,
       (SELECT CASE WHEN text<>'' THEN text ELSE 'Attachment' END FROM messages WHERE chat_id=c.id ORDER BY id DESC LIMIT 1) AS last_message
       FROM chats c JOIN members m ON m.chat_id=c.id WHERE m.user_id=? ORDER BY c.updated_at DESC,c.id`)
       .all(userId, userId).map((row) => ({ id: String(row.id), title: row.peer ? String(row.peer) : "Waiting for a friend",
-        joined: Number(row.count) === 2, updatedAt: Number(row.updated_at), lastMessage: String(row.last_message ?? "No messages yet") }));
+        joined: Number(row.count) === 2, owned: row.owner_id === userId, updatedAt: Number(row.updated_at), lastMessage: String(row.last_message ?? "No messages yet") }));
   }
 
   messages(chatId: string, userId: string, { after = 0, before = 0 } = {}): ChatMessage[] {

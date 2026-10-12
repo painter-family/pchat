@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { randomBytes, randomUUID } from "node:crypto";
-import { mkdtempSync, rmSync, existsSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdtempSync, rmSync, existsSync, readFileSync, writeFileSync, readdirSync } from "node:fs";
 import { once } from "node:events";
 import { spawn, spawnSync } from "node:child_process";
 import os from "node:os";
@@ -8,6 +8,7 @@ import path from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import { encode } from "next-auth/jwt";
 import { JSDOM } from "jsdom";
+import WebSocket from "ws";
 
 // Uses test sessions, never Google credentials. Cloud mode writes only development
 // resources with unique probe users and removes those users/chats/objects afterward.
@@ -33,7 +34,9 @@ if (worker) {
   writeFileSync(configFile, JSON.stringify(config));
   const common = ["--config", configFile, "--persist-to", path.join(directory, "state")];
   const cli = path.resolve("node_modules/wrangler/bin/wrangler.js");
-  const migration = spawnSync(process.execPath, [cli, "d1", "execute", "pchat-preview", "--local", "--file", path.resolve("migrations/0001_initial.sql"), ...common], { encoding: "utf8" });
+  const schemaFile = path.join(directory, "schema.sql");
+  writeFileSync(schemaFile, readdirSync("migrations").sort().map(name => readFileSync(path.join("migrations", name), "utf8")).join("\n"));
+  const migration = spawnSync(process.execPath, [cli, "d1", "execute", "pchat-preview", "--local", "--file", schemaFile, ...common], { encoding: "utf8" });
   assert.equal(migration.status, 0, migration.stderr);
   serverArgs = [cli, "dev", "--local", "--port", String(port), ...common];
 }
@@ -44,6 +47,7 @@ const server = spawn(process.execPath, serverArgs, {
 });
 let serverError;
 let serverLog = "";
+const sockets = [];
 server.stdout.on("data", (chunk) => { serverLog = (serverLog + chunk).slice(-12000); });
 server.stderr.on("data", (chunk) => { serverLog = (serverLog + chunk).slice(-12000); });
 server.on("error", (error) => { serverError = error; });
@@ -87,6 +91,11 @@ try {
   const created = await request("/api/chats", alice, { method: "POST" });
   assert.equal(created.status, 201, await created.clone().text());
   const { id, token } = await created.json();
+  for (const owner of [alice, await cookie("alice", "Alice")]) {
+    const renewed = await request(`/api/chats/${id}/invite`, owner, { method: "POST" });
+    assert.equal(renewed.status, 200);
+    assert.equal((await renewed.json()).token, token);
+  }
   const anonymousInvite = await request(`/invite/${token}`);
   const anonymousHtml = await anonymousInvite.text();
   if (anonymousInvite.status !== 200) {
@@ -129,12 +138,73 @@ try {
     const page = await request(`/chat/${id}`, person);
     assert.ok((await page.text()).includes("Chat navigation"));
   }
+  const aliceSecondDevice = await cookie("alice", "Alice");
+  const viewRoute = `/api/chats/${id}/view`;
+  const patchView = (person, body) => request(viewRoute, person, { method: "PATCH",
+    headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+  const firstView = await (await request(viewRoute, alice)).json();
+  assert.equal(firstView.draft, "");
+  const handoff = await patchView(alice, { revision: firstView.revision, draft: "Continue this on my iPad", anchorId: history.messages[1].id, anchorOffset: 0.35 });
+  assert.equal(handoff.status, 200, await handoff.clone().text());
+  assert.deepEqual(await (await request(viewRoute, aliceSecondDevice)).json(), await handoff.json().then(view => ({ ...view, inviteToken: token })));
+  assert.equal((await patchView(aliceSecondDevice, { revision: firstView.revision, draft: "Stale device" })).status, 409);
+  assert.equal((await request(viewRoute, eve)).status, 404);
+  assert.equal((await (await request(viewRoute, aliceSecondDevice)).json()).inviteToken, token);
+
+  if (worker) {
+    const watch = async person => {
+      const response = await request("/api/live-ticket", person, { method: "POST" });
+      assert.equal(response.status, 200);
+      const { ticket } = await response.json();
+      const socket = new WebSocket(base.replace("http:", "ws:") + "/api/live", ["pchat.v1", "ticket." + ticket], { headers: { Origin: base } });
+      sockets.push(socket);
+      const watched = { socket, count: 0 };
+      socket.on("message", bytes => { if (JSON.parse(bytes.toString()).type === "invalidate") watched.count++; });
+      await once(socket, "open");
+      return watched;
+    };
+    const observers = await Promise.all([watch(alice), watch(aliceSecondDevice), watch(bob), watch(eve)]);
+    const waitUntil = async condition => {
+      for (let i = 0; i < 100 && !condition(); i++) await sleep(50);
+      assert.ok(condition(), "Connected devices did not receive their live updates.");
+    };
+    await waitUntil(() => observers.every(observer => observer.count > 0));
+    let counts = observers.map(observer => observer.count);
+    const selectResponse = await request("/api/view", alice, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ selectedChatId: null }) });
+    assert.equal(selectResponse.status, 200);
+    await waitUntil(() => observers[0].count > counts[0] && observers[1].count > counts[1]);
+    assert.equal((await (await request("/api/view", aliceSecondDevice)).json()).selectedChatId, null);
+    assert.equal(observers[2].count, counts[2]);
+    assert.equal(observers[3].count, counts[3]);
+    counts = observers.map(observer => observer.count);
+    const shared = await (await request(viewRoute, alice)).json();
+    assert.equal((await patchView(alice, { revision: shared.revision, draft: "Live shared draft" })).status, 200);
+    await waitUntil(() => observers[0].count > counts[0] && observers[1].count > counts[1]);
+    assert.equal(observers[2].count, counts[2], "A peer must not receive the user's private draft updates.");
+    assert.equal(observers[3].count, counts[3], "Other users must not receive notifications.");
+    assert.equal((await (await request(viewRoute, aliceSecondDevice)).json()).draft, "Live shared draft");
+    counts = observers.map(observer => observer.count);
+    await sendMessage(id, bob, "Seen on every device");
+    await waitUntil(() => observers.slice(0, 3).every((observer, i) => observer.count > counts[i]));
+    assert.equal(observers[3].count, counts[3]);
+    observers[0].socket.close(); await once(observers[0].socket, "close");
+    counts = observers.map(observer => observer.count);
+    await sendMessage(id, bob, "Other connection remains active");
+    await waitUntil(() => observers[1].count > counts[1] && observers[2].count > counts[2]);
+    const reconnected = await watch(alice);
+    await waitUntil(() => reconnected.count > 0);
+    assert.equal((await (await request(viewRoute, alice)).json()).draft, "Live shared draft");
+    assert.equal((await fetch(base + "/api/live", { headers: { Origin: base } })).status, 401);
+    assert.equal((await fetch(base + "/api/live", { headers: { Origin: "https://other.example" } })).status, 403);
+    console.log("Multi-device checks passed: shared draft/reading position, stale-write rejection, live fanout, user isolation, independent disconnect, and reconnect catch-up.");
+  }
   console.log("HTTP chat checks passed: invitations, two participants, both message directions, private image/video uploads, byte ranges, saved history and sidebar pages.");
   if (cloud || worker) assert.equal(existsSync(path.join(directory, "pchat.sqlite")), false, "Cloud mode must not create local chat storage.");
 } catch (error) {
   console.error(serverLog.replaceAll(secret, "[redacted]"));
   throw error;
 } finally {
+  for (const socket of sockets) socket.terminate();
   if (server.exitCode === null) {
     // Wrangler starts workerd children; stop the whole owned test process tree
     // before removing its Windows-locked local D1 files.
@@ -151,6 +221,8 @@ try {
         JOIN messages m ON m.id=a.message_id JOIN chats c ON c.id=m.chat_id WHERE c.owner_id=?`).bind(actorId("alice")).all();
       for (const row of results) await proxy.env.MEDIA.delete(row.storage_name);
       await proxy.env.DB.batch([
+        proxy.env.DB.prepare("DELETE FROM chat_views WHERE user_id IN (?,?,?)").bind(actorId("alice"),actorId("bob"),actorId("eve")),
+        proxy.env.DB.prepare("DELETE FROM user_views WHERE user_id IN (?,?,?)").bind(actorId("alice"),actorId("bob"),actorId("eve")),
         proxy.env.DB.prepare("DELETE FROM attachments WHERE message_id IN (SELECT id FROM messages WHERE chat_id IN (SELECT id FROM chats WHERE owner_id=?))").bind(actorId("alice")),
         proxy.env.DB.prepare("DELETE FROM messages WHERE chat_id IN (SELECT id FROM chats WHERE owner_id=?)").bind(actorId("alice")),
         proxy.env.DB.prepare("DELETE FROM members WHERE chat_id IN (SELECT id FROM chats WHERE owner_id=?)").bind(actorId("alice")),

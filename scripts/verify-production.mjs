@@ -4,6 +4,8 @@ import { randomUUID } from "node:crypto";
 import { parseEnv } from "node:util";
 import { encode } from "next-auth/jwt";
 import { JSDOM } from "jsdom";
+import WebSocket from "ws";
+import { once } from "node:events";
 
 const config = JSON.parse(readFileSync("wrangler.d1.json", "utf8"));
 const base = config.env.production.vars.AUTH_URL;
@@ -46,4 +48,20 @@ if (existsSync(".env.production.local")) {
   assert.equal(response.status, 200);
   assert.deepEqual(await response.json(), { chats: [] });
   console.log("Production session secret and authenticated D1 read passed; no chat data was written.");
+  const sockets = [];
+  try {
+    for (let i = 0; i < 2; i++) {
+      const ticketResponse = await request("/api/live-ticket", { method: "POST", headers: { Cookie: `${cookieName}=${token}`, Origin: base } });
+      assert.equal(ticketResponse.status, 200);
+      const { ticket } = await ticketResponse.json();
+      const socket = new WebSocket(base.replace("https:", "wss:") + "/api/live", ["pchat.v1", "ticket." + ticket], { headers: { Origin: base }, handshakeTimeout: 15000 });
+      sockets.push(socket);
+      const initial = once(socket, "message");
+      await once(socket, "open");
+      const [message] = await initial;
+      assert.equal(JSON.parse(message.toString()).type, "invalidate");
+    }
+    assert.ok(sockets.every(socket => socket.readyState === WebSocket.OPEN));
+    console.log("Two simultaneous authenticated production WebSocket connections passed.");
+  } finally { for (const socket of sockets) socket.terminate(); }
 }

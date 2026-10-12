@@ -3,9 +3,13 @@ export type ChatSummary = {
   id: string;
   title: string;
   joined: boolean;
+  owned?: boolean;
   updatedAt: number;
   lastMessage: string;
 };
+
+export type UserView = { selectedChatId: string | null; revision: number };
+export type ChatView = { draft: string; draftRevision: number; anchorId: number | null; anchorOffset: number; revision: number };
 export type ChatMessage = {
   id: number;
   chatId: string;

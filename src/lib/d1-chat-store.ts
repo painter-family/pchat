@@ -1,7 +1,8 @@
-import { createHash, randomBytes, randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import type { D1Database } from "@cloudflare/workers-types";
 import { ChatError, INVITE_TTL, type StoredAttachment } from "./chat-store";
 import type { ChatMessage, ChatSummary, ChatUser } from "./chat-types";
+import { chatInvitationKey } from "./chat-invites";
 
 const hash = (token: string) => createHash("sha256").update(token).digest("hex");
 
@@ -21,7 +22,7 @@ export class D1ChatStore {
 
   async createChat(user: ChatUser) {
     const id = randomUUID();
-    const token = randomBytes(32).toString("base64url");
+    const token = chatInvitationKey(id);
     const now = Date.now();
     await this.db.batch([
       this.userStatement(user),
@@ -33,7 +34,7 @@ export class D1ChatStore {
 
   async refreshInvite(chatId: string, userId: string) {
     await this.requireMember(chatId, userId);
-    const token = randomBytes(32).toString("base64url");
+    const token = chatInvitationKey(chatId);
     const result = await this.db.prepare(`UPDATE chats SET invite_hash=?,invite_expires=? WHERE id=? AND owner_id=?
       AND (SELECT COUNT(*) FROM members WHERE chat_id=chats.id)<2`)
       .bind(hash(token), Date.now() + INVITE_TTL, chatId, userId).run();
@@ -59,6 +60,15 @@ export class D1ChatStore {
     return { id: chat.id, joined: false, name: chat.name };
   }
 
+  async currentInvite(chatId: string, userId: string) {
+    await this.requireMember(chatId, userId);
+    const row = await this.db.prepare("SELECT owner_id,invite_hash,invite_expires FROM chats WHERE id=?").bind(chatId)
+      .first<{ owner_id: string; invite_hash: string; invite_expires: number }>();
+    if (row?.owner_id !== userId || row.invite_expires < Date.now()) return null;
+    const token = chatInvitationKey(chatId);
+    return row.invite_hash === hash(token) ? token : null;
+  }
+
   async joinChat(token: string, user: ChatUser) {
     const invite = await this.invitation(token, user.id);
     if (invite.joined) return invite.id;
@@ -77,13 +87,13 @@ export class D1ChatStore {
   }
 
   async listChats(userId: string): Promise<ChatSummary[]> {
-    const { results } = await this.db.prepare(`SELECT c.id,c.updated_at,
+    const { results } = await this.db.prepare(`SELECT c.id,c.owner_id,c.updated_at,
       (SELECT u.name FROM members p JOIN users u ON u.id=p.user_id WHERE p.chat_id=c.id AND p.user_id<>?) AS peer,
       (SELECT COUNT(*) FROM members WHERE chat_id=c.id) AS count,
       (SELECT CASE WHEN text<>'' THEN text ELSE 'Attachment' END FROM messages WHERE chat_id=c.id ORDER BY id DESC LIMIT 1) AS last_message
       FROM chats c JOIN members m ON m.chat_id=c.id WHERE m.user_id=? ORDER BY c.updated_at DESC,c.id`).bind(userId, userId).all();
     return results.map((row) => ({ id: String(row.id), title: row.peer ? String(row.peer) : "Waiting for a friend",
-      joined: Number(row.count) === 2, updatedAt: Number(row.updated_at), lastMessage: String(row.last_message ?? "No messages yet") }));
+      joined: Number(row.count) === 2, owned: row.owner_id === userId, updatedAt: Number(row.updated_at), lastMessage: String(row.last_message ?? "No messages yet") }));
   }
 
   async messages(chatId: string, userId: string, { after = 0, before = 0 } = {}): Promise<ChatMessage[]> {
