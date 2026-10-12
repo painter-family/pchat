@@ -32,6 +32,13 @@
     "AUTH_URL": "http://localhost:3107",
     "AUTH_TRUST_HOST": "true"
   },
+  "observability": {
+    "logs": {
+      "enabled": true,
+      "invocation_logs": true,
+      "persist": true
+    }
+  },
   "services": [
     {
       "binding": "WORKER_SELF_REFERENCE",
