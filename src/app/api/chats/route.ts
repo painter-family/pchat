@@ -1,10 +1,11 @@
+import { chatLanguages } from "@/lib/chat-languages";
 import { chatApi } from "@/lib/chat-api";
 import { chatStore } from "@/lib/chat-store";
 import { userSessions } from "@/lib/user-sessions";
 import { notifyUsers } from "@/lib/chat-live";
 
 export async function GET(request: Request) {
-  return chatApi(request, false, async (user) => Response.json({ chats: await (await chatStore()).listChats(user.id) }));
+  return chatApi(request, false, async (user) => Response.json({ chats: await (await chatLanguages()).summaries(await (await chatStore()).listChats(user.id), user.id) }));
 }
 export async function POST(request: Request) {
   return chatApi(request, true, async (user) => {

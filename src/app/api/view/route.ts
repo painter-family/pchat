@@ -1,13 +1,20 @@
+import { chatLanguages, isLanguage } from "@/lib/chat-languages";
 import { chatApi } from "@/lib/chat-api";
 import { ChatError } from "@/lib/chat-store";
 import { userSessions } from "@/lib/user-sessions";
 import { notifyUsers } from "@/lib/chat-live";
 export async function GET(request: Request) {
-  return chatApi(request, false, async user => Response.json({ ...await (await userSessions()).userView(user.id), user }));
+  return chatApi(request, false, async user => Response.json({ ...await (await userSessions()).userView(user.id), preferredLanguage: await (await chatLanguages()).preferred(user.id), user }));
 }
 export async function PATCH(request: Request) {
   return chatApi(request, true, async user => {
     const body = await request.json().catch(() => null);
+    if (body && body.preferredLanguage !== undefined) {
+      if (!isLanguage(body.preferredLanguage) || body.selectedChatId !== undefined) throw new ChatError("Invalid reading language.");
+      await (await chatLanguages()).setPreferred(user, body.preferredLanguage);
+      await notifyUsers([user.id]);
+      return Response.json({ ...await (await userSessions()).userView(user.id), preferredLanguage: body.preferredLanguage });
+    }
     if (!body || (body.selectedChatId !== null && (typeof body.selectedChatId !== "string" || body.selectedChatId.length > 100))) throw new ChatError("Invalid selected conversation.");
     // Only a first direct chat URL may initialize an empty saved selection.
     // A device resuming an old URL must not overwrite another device's choice.

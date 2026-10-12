@@ -65,8 +65,12 @@ export class UserSessions {
       { sql: `INSERT INTO user_views(user_id,selected_chat_id,revision) SELECT ?,v.selected_chat_id,v.revision FROM user_views v
         JOIN user_aliases a ON a.alias_id=v.user_id WHERE a.user_id=? ORDER BY v.revision DESC LIMIT 1
         ON CONFLICT(user_id) DO NOTHING`, values: [id, id] },
-      { sql: `INSERT INTO chat_views(user_id,chat_id,draft,anchor_id,anchor_offset,revision,draft_revision)
-        SELECT ?,chat_id,draft,anchor_id,anchor_offset,revision,draft_revision FROM (
+      { sql: `INSERT INTO user_preferences(user_id,preferred_language)
+        SELECT ?,p.preferred_language FROM user_preferences p JOIN user_aliases a ON a.alias_id=p.user_id
+        WHERE a.user_id=? ORDER BY CASE WHEN p.user_id=? THEN 0 ELSE 1 END,p.user_id LIMIT 1
+        ON CONFLICT(user_id) DO NOTHING`, values: [id, id, id] },
+      { sql: `INSERT INTO chat_views(user_id,chat_id,draft,anchor_id,anchor_offset,revision,draft_revision,input_language)
+        SELECT ?,chat_id,draft,anchor_id,anchor_offset,revision,draft_revision,input_language FROM (
           SELECT v.*,ROW_NUMBER() OVER(PARTITION BY v.chat_id ORDER BY v.revision DESC) AS priority FROM chat_views v
           JOIN user_aliases a ON a.alias_id=v.user_id WHERE a.user_id=?) WHERE priority=1
         ON CONFLICT(user_id,chat_id) DO NOTHING`, values: [id, id] },
@@ -89,15 +93,16 @@ export class UserSessions {
   }
   async chatView(chatId: string, userId: string): Promise<ChatView> {
     if (!await this.first("SELECT 1 FROM members WHERE chat_id=? AND user_id=?", [chatId, userId])) throw new ChatError("Chat not found.", 404);
-    const row = await this.first<{ draft: string; draft_revision: number; anchor_id: number | null; anchor_offset: number; revision: number }>(
-      "SELECT draft,draft_revision,anchor_id,anchor_offset,revision FROM chat_views WHERE user_id=? AND chat_id=?", [userId, chatId]);
-    return { draft: row?.draft || "", draftRevision: row?.draft_revision || 0, anchorId: row?.anchor_id ?? null, anchorOffset: row?.anchor_offset || 0, revision: row?.revision || 0 };
+    const row = await this.first<{ input_language: "en" | "es"; draft: string; draft_revision: number; anchor_id: number | null; anchor_offset: number; revision: number }>(
+      "SELECT draft,draft_revision,anchor_id,anchor_offset,revision,input_language FROM chat_views WHERE user_id=? AND chat_id=?", [userId, chatId]);
+    return { inputLanguage: row?.input_language || "en", draft: row?.draft || "", draftRevision: row?.draft_revision || 0, anchorId: row?.anchor_id ?? null, anchorOffset: row?.anchor_offset || 0, revision: row?.revision || 0 };
   }
-  async updateChatView(chatId: string, userId: string, expectedRevision: number, patch: Partial<Pick<ChatView, "draft" | "anchorId" | "anchorOffset">>) {
+  async updateChatView(chatId: string, userId: string, expectedRevision: number, patch: Partial<Pick<ChatView, "draft" | "anchorId" | "anchorOffset" | "inputLanguage">>) {
     if (!await this.first("SELECT 1 FROM members WHERE chat_id=? AND user_id=?", [chatId, userId])) throw new ChatError("Chat not found.", 404);
     const fields: string[] = [];
     const values: Values = [];
     if (patch.draft !== undefined) { fields.push("draft=?", "draft_revision=draft_revision+1"); values.push(patch.draft); }
+    if (patch.inputLanguage !== undefined) { fields.push("input_language=?"); values.push(patch.inputLanguage); if (patch.draft === undefined) fields.push("draft_revision=draft_revision+1"); }
     if (patch.anchorId !== undefined) { fields.push("anchor_id=?"); values.push(patch.anchorId); }
     if (patch.anchorOffset !== undefined) { fields.push("anchor_offset=?"); values.push(patch.anchorOffset); }
     if (!fields.length) throw new ChatError("No view changes supplied.");

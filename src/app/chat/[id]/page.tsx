@@ -1,3 +1,4 @@
+import { chatLanguages } from "@/lib/chat-languages";
 import { Suspense } from "react";
 import { connection } from "next/server";
 import { notFound } from "next/navigation";
@@ -15,7 +16,7 @@ async function Conversation({ params }: { params: Promise<{ id: string }> }) {
   const store = await chatStore();
   try { await store.requireMember(id, user.id); }
   catch (error) { if (isChatError(error)) notFound(); throw error; }
-  return <ChatWorkspace user={user} initialChats={await store.listChats(user.id)} selectedId={id} />;
+  return <ChatWorkspace initialPreferredLanguage={await (await chatLanguages()).preferred(user.id)} user={user} initialChats={await (await chatLanguages()).summaries(await store.listChats(user.id), user.id)} selectedId={id} />;
 }
 
 export default function ChatPage(props: { params: Promise<{ id: string }> }) {

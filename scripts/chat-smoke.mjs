@@ -29,6 +29,7 @@ if (worker) {
   config.main = path.resolve(config.main);
   config.assets.directory = path.resolve(config.assets.directory);
   delete config.$schema;
+  delete config.ai; // Isolated smoke checks never call paid remote inference.
   Object.assign(config.vars, { AUTH_SECRET: secret, AUTH_GOOGLE_ID: "http-test.apps.googleusercontent.com", AUTH_GOOGLE_SECRET: "http-test-only" });
   const configFile = path.join(directory, "wrangler.json");
   writeFileSync(configFile, JSON.stringify(config));
@@ -69,8 +70,8 @@ async function submitJoin(html, token, cookieValue) {
   dom.window.close();
   return request(`/invite/${token}`, cookieValue, { method: "POST", body });
 }
-async function sendMessage(id, cookieValue, text, filename, bytes, type) {
-  const body = new FormData(); body.set("text", text); body.set("clientKey", randomBytes(16).toString("hex"));
+async function sendMessage(id, cookieValue, text, filename, bytes, type, sourceLanguage = "en") {
+  const body = new FormData(); body.set("sourceLanguage", sourceLanguage); body.set("text", text); body.set("clientKey", randomBytes(16).toString("hex"));
   if (filename) body.set("file", new File([bytes], filename, { type }));
   const response = await request(`/api/chats/${id}/messages`, cookieValue, { method: "POST", body });
   assert.equal(response.status, 201, await response.text());
@@ -151,6 +152,33 @@ try {
   assert.equal((await request(viewRoute, eve)).status, 404);
   assert.equal((await (await request(viewRoute, aliceSecondDevice)).json()).inviteToken, token);
 
+  if (worker || cloud) {
+    const languageView = await (await request(viewRoute, alice)).json();
+    const languageSaved = await patchView(alice, { revision: languageView.revision, inputLanguage: "es" });
+    assert.equal(languageSaved.status, 200);
+    assert.equal((await (await request(viewRoute, aliceSecondDevice)).json()).inputLanguage, "es");
+    const reading = await request("/api/view", alice, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ preferredLanguage: "es" }) });
+    assert.equal(reading.status, 200);
+    assert.equal((await (await request("/api/view", aliceSecondDevice)).json()).preferredLanguage, "es");
+    await sendMessage(id, alice, "Hola", undefined, undefined, undefined, "es");
+    const spanishHistory = await (await request(`/api/chats/${id}/messages`, bob)).json();
+    const spanish = spanishHistory.messages.at(-1);
+    assert.equal(spanish.text, "Hola");
+    assert.equal(spanish.sourceLanguage, "es");
+    assert.equal(spanish.translation.status, "pending");
+    const translationRequest = person => request(`/api/chats/${id}/translations`, person, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ ids: [spanish.id] }) });
+    assert.equal((await translationRequest(eve)).status, 404);
+    assert.equal((await translationRequest()).status, 401);
+    const failedTranslation = await translationRequest(bob);
+    assert.equal(failedTranslation.status, 200);
+    const translationResult = (await failedTranslation.json()).messages[0].translation;
+    if (cloud) {
+      assert.equal(translationResult.status, "ready", "Live development inference must succeed.");
+      assert.ok(translationResult.text?.trim());
+    } else assert.equal(translationResult.status, "failed", "An unavailable AI binding must preserve the original.");
+    assert.equal((await (await request(`/api/chats/${id}/messages`, bob)).json()).messages.at(-1).text, "Hola");
+    console.log("Language checks passed: cross-device preferences, recorded Spanish source, English target, private translation endpoint and original preserved. Translation " + (cloud ? "succeeded through live Workers AI." : "failure handled without AI."));
+  }
   if (worker) {
     const watch = async person => {
       const response = await request("/api/live-ticket", person, { method: "POST" });
@@ -206,9 +234,9 @@ try {
 } finally {
   for (const socket of sockets) socket.terminate();
   if (server.exitCode === null) {
-    // Wrangler starts workerd children; stop the whole owned test process tree
-    // before removing its Windows-locked local D1 files.
-    if (worker && process.platform === "win32") spawnSync("taskkill", ["/PID", String(server.pid), "/T", "/F"], { stdio: "ignore" });
+    // Next development and Wrangler spawn child processes. Stop the owned
+    // test tree before removing Windows-locked build or local D1 files.
+    if (process.platform === "win32") spawnSync("taskkill", ["/PID", String(server.pid), "/T", "/F"], { stdio: "ignore" });
     else server.kill();
     await Promise.race([once(server, "exit"), sleep(3000)]);
   }
@@ -221,6 +249,7 @@ try {
         JOIN messages m ON m.id=a.message_id JOIN chats c ON c.id=m.chat_id WHERE c.owner_id=?`).bind(actorId("alice")).all();
       for (const row of results) await proxy.env.MEDIA.delete(row.storage_name);
       await proxy.env.DB.batch([
+        proxy.env.DB.prepare("DELETE FROM user_preferences WHERE user_id IN (?,?,?)").bind(actorId("alice"),actorId("bob"),actorId("eve")),
         proxy.env.DB.prepare("DELETE FROM chat_views WHERE user_id IN (?,?,?)").bind(actorId("alice"),actorId("bob"),actorId("eve")),
         proxy.env.DB.prepare("DELETE FROM user_views WHERE user_id IN (?,?,?)").bind(actorId("alice"),actorId("bob"),actorId("eve")),
         proxy.env.DB.prepare("DELETE FROM attachments WHERE message_id IN (SELECT id FROM messages WHERE chat_id IN (SELECT id FROM chats WHERE owner_id=?))").bind(actorId("alice")),

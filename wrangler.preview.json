@@ -60,5 +60,9 @@
         "class_name": "UserConnections"
       }
     ]
+  },
+  "ai": {
+    "binding": "AI",
+    "remote": true
   }
 }

@@ -106,20 +106,20 @@ export class D1ChatStore {
     const { results } = await statement.bind(...(after || before ? [chatId, after || before] : [chatId])).all();
     if (!newer) results.reverse();
     return results.map((row) => ({ id: Number(row.id), chatId: String(row.chat_id), senderId: String(row.sender_id),
-      senderName: String(row.sender_name), text: String(row.text), createdAt: Number(row.created_at),
+      senderName: String(row.sender_name), text: String(row.text), sourceLanguage: row.source_language === "es" ? "es" : "en", createdAt: Number(row.created_at),
       attachment: row.attachment_id ? { id: String(row.attachment_id), name: String(row.attachment_name), mime: String(row.mime), size: Number(row.size) } : null }));
   }
 
-  async sendMessage(chatId: string, user: ChatUser, text: string, clientKey: string, attachment?: StoredAttachment) {
+  async sendMessage(chatId: string, user: ChatUser, text: string, clientKey: string, attachment?: StoredAttachment, sourceLanguage: "en" | "es" = "en") {
     if (text.length > 10000) throw new ChatError("Messages can contain at most 10,000 characters.");
     if (!text.trim() && !attachment) throw new ChatError("Enter a message or choose an image or video.");
     if (!/^[\w-]{1,80}$/.test(clientKey)) throw new ChatError("Invalid message identifier.");
     await this.requireMember(chatId, user.id);
     const now = Date.now();
     const statements = [this.userStatement(user),
-      this.db.prepare(`INSERT INTO messages(chat_id,sender_id,client_key,text,created_at)
-        SELECT ?,?,?,?,? WHERE EXISTS(SELECT 1 FROM members WHERE chat_id=? AND user_id=?)
-        ON CONFLICT(chat_id,sender_id,client_key) DO NOTHING`).bind(chatId, user.id, clientKey, text.trim(), now, chatId, user.id)];
+      this.db.prepare(`INSERT INTO messages(chat_id,sender_id,client_key,text,created_at,source_language)
+        SELECT ?,?,?,?,?,? WHERE EXISTS(SELECT 1 FROM members WHERE chat_id=? AND user_id=?)
+        ON CONFLICT(chat_id,sender_id,client_key) DO NOTHING`).bind(chatId, user.id, clientKey, text.trim(), now, sourceLanguage, chatId, user.id)];
     if (attachment) statements.push(this.db.prepare(`INSERT INTO attachments(id,message_id,name,mime,size,storage_name)
       SELECT ?,id,?,?,?,? FROM messages WHERE chat_id=? AND sender_id=? AND client_key=? AND changes()>0`)
       .bind(attachment.id, attachment.name, attachment.mime, attachment.size, attachment.storageName, chatId, user.id, clientKey));

@@ -729,3 +729,57 @@ disconnects, and reconnect catch-up, alongside the existing chat/media checks.
 Production deployment also applies the Durable Object class migration from the
 Wrangler configuration. After deployment, refresh existing browser tabs once
 and sign in with the same Google account on the second device.
+
+## Spanish and English messages
+
+Open the three-dot options button on a conversation card in the left sidebar
+and choose **Writing language → Español** to write Spanish in that chat.
+The composer displays the current writing language. This choice belongs to your
+account and conversation; your other browsers and devices receive the update.
+The other participant has their own writing setting.
+
+**Reading language** below the conversation list defaults to **English**, and
+can be changed to **Español**. Incoming messages written in the other language
+are translated to this preference, including the latest-message preview in the
+sidebar. Your own sent messages remain in their original language. Select
+**Show original** on a translated message to inspect its original text.
+Images and videos are unchanged; accompanying message text is translated.
+Download and delete entries are disabled placeholders for future features.
+
+Messages retain their original text and source language permanently in D1.
+Translations are stored separately by message and target language. Authorized
+viewers request translations through a same-origin POST endpoint, with a
+persisted lease preventing duplicate inference across devices. An interrupted
+request can resume after two minutes when the conversation is viewed again.
+Failures show the original and **Retry translation**; they never prevent the
+original message from being saved or sent. The existing live connections notify
+other devices when a translation finishes. Translation is requested on viewing,
+so no always-running queue or background server is required.
+
+Migration `0003_languages.sql` adds these settings and translation records.
+Older messages default to an English source language. Apply it before running
+this version against an existing development database:
+
+```bash
+npm run d1:migrate:dev
+npm run dev
+```
+
+Production deployment uses the existing command, which builds the Worker,
+applies all production migrations, checks the artifact, and deploys:
+
+```bash
+npm run deploy:worker
+```
+
+Translation uses Cloudflare Workers AI's
+[`@cf/meta/m2m100-1.2b` model](https://developers.cloudflare.com/workers-ai/models/m2m100-1.2b/).
+An `AI` binding is configured in development, production, and interactive Worker
+preview. There is no translation token to put in a browser or an environment
+file: the server accesses the service through the binding. Local development
+uses real remote Workers AI inference with the logged-in Wrangler account and
+is subject to Cloudflare usage limits and billing. Cached translations avoid
+repeated inference. Offline `PCHAT_STORAGE=local` preserves messaging and language
+settings, but translation is unavailable until Cloudflare storage is used.
+The isolated automated Worker smoke check omits the remote AI binding.
+Machine translations may contain errors; the original is always available.

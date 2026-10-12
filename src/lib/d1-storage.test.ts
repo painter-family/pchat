@@ -9,6 +9,8 @@ import { D1ChatStore } from "./d1-chat-store";
 import { auth } from "@/auth";
 import { POST as send } from "@/app/api/chats/[id]/messages/route";
 import { GET as readMedia } from "@/app/api/media/[id]/route";
+import { ChatLanguages } from "./chat-languages";
+import { POST as translateMessages } from "@/app/api/chats/[id]/translations/route";
 import { UserSessions } from "./user-sessions";
 
 vi.mock("@/auth", () => ({ auth: vi.fn() }));
@@ -36,7 +38,7 @@ beforeAll(async () => {
   store = new D1ChatStore(proxy.env.DB);
 }, 30000);
 beforeEach(async () => {
-  await proxy.env.DB.batch(["chat_views", "user_views", "user_aliases", "google_accounts", "attachments", "messages", "members", "chats", "users"].map((table) => proxy.env.DB.prepare(`DELETE FROM ${table}`)));
+  await proxy.env.DB.batch(["message_translations", "user_preferences", "chat_views", "user_views", "user_aliases", "google_accounts", "attachments", "messages", "members", "chats", "users"].map((table) => proxy.env.DB.prepare(`DELETE FROM ${table}`)));
   vi.stubEnv("AUTH_URL", base);
   vi.stubEnv("AUTH_SECRET", "test-secret");
   vi.stubEnv("AUTH_GOOGLE_ID", "test-client");
@@ -161,3 +163,23 @@ test("R2 uploads remain private, support video ranges, and clean up duplicate up
   expect((await upload("outsider", png, "no.png")).status).toBe(404);
   expect((await proxy.env.MEDIA.list()).objects).toHaveLength(before + 1);
 }, 15000);
+
+test("D1 language settings and translation leases synchronize devices while keeping original messages private", async () => {
+  const chat = await store.createChat(alice); await store.joinChat(chat.token, bob);
+  const sessions = new UserSessions(proxy.env.DB);
+  await sessions.updateChatView(chat.id, alice.id, 0, { inputLanguage: "es", draft: "Hola" });
+  expect(await new UserSessions(proxy.env.DB).chatView(chat.id, alice.id)).toMatchObject({ inputLanguage: "es", draft: "Hola" });
+  const message = await store.sendMessage(chat.id, alice, "Hola", "language-test", undefined, "es");
+  const translate = vi.fn(async () => "Hello");
+  const languages = new ChatLanguages(sessions, translate);
+  await Promise.all([languages.request(chat.id, bob.id, [message.id]), new ChatLanguages(new UserSessions(proxy.env.DB), translate).request(chat.id, bob.id, [message.id])]);
+  expect(translate).toHaveBeenCalledOnce();
+  expect((await languages.decorate(await store.messages(chat.id, bob.id), bob.id))[0]).toMatchObject({ text: "Hola", sourceLanguage: "es", translation: { text: "Hello", status: "ready" } });
+  await languages.setPreferred(bob, "es");
+  expect(await new ChatLanguages(new UserSessions(proxy.env.DB)).preferred(bob.id)).toBe("es");
+  await expect(languages.request(chat.id, eve.id, [message.id])).rejects.toThrow("Chat not found");
+  vi.mocked(auth).mockResolvedValue({ user: eve, expires: "2099-01-01" } as never);
+  const request = () => new Request(`${base}/api/chats/${chat.id}/translations`, { method: "POST", headers: { Origin: base, "Content-Type": "application/json" }, body: JSON.stringify({ ids: [message.id] }) });
+  expect((await translateMessages(request(), { params: Promise.resolve({ id: chat.id }) })).status).toBe(404);
+  expect((await store.messages(chat.id, bob.id))[0].text).toBe("Hola");
+});

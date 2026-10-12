@@ -1,5 +1,6 @@
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, expect, test, vi } from "vitest";
+import type { ChatSummary } from "@/lib/chat-types";
 import { ChatWorkspace } from "./chat-workspace";
 
 const { push, router } = vi.hoisted(() => { const push = vi.fn(); return { push, router: { push, replace: vi.fn() } }; });
@@ -160,4 +161,37 @@ test("a conversation switch from another device saves the pending local draft be
   act(() => window.dispatchEvent(new Event("pchat:invalidate")));
   await waitFor(() => expect(router.replace).toHaveBeenCalledWith("/chat/chat-2"));
   expect(view.draft).toBe("Keep this unfinished draft");
+});
+
+test("conversation menus save Spanish without navigation and translated messages reveal their original", async () => {
+  const chats: ChatSummary[] = [{ id: "chat-1", title: "Bob", joined: true, updatedAt: 1, lastMessage: "Hello", inputLanguage: "en" }];
+  let view = { draft: "", draftRevision: 1, anchorId: null, anchorOffset: 0, revision: 1, inputLanguage: "en" };
+  const fetchMock = vi.fn(async (url: string, options?: RequestInit) => {
+    if (url === "/api/live-ticket") return Response.json({ kind: "none" });
+    if (url === "/api/view") return Response.json({ selectedChatId: "chat-1", revision: 1, preferredLanguage: "en" });
+    if (url === "/api/chats") return Response.json({ chats });
+    if (url.endsWith("/view")) {
+      if (options?.method === "PATCH") {
+        const patch = JSON.parse(options.body as string);
+        view = { ...view, inputLanguage: patch.inputLanguage, revision: view.revision + 1 };
+        chats[0].inputLanguage = patch.inputLanguage;
+      }
+      return Response.json(view);
+    }
+    return Response.json({ messages: [{ id: 1, chatId: "chat-1", senderId: "bob", senderName: "Bob", text: "Hola", sourceLanguage: "es", createdAt: 1, attachment: null, translation: { status: "ready", targetLanguage: "en", text: "Hello" } }] });
+  });
+  vi.stubGlobal("fetch", fetchMock);
+  render(<ChatWorkspace user={{ id: "alice", name: "Alice", email: "alice@example.com" }} initialChats={chats} selectedId="chat-1" />);
+  await screen.findByText("Hello", { selector: "p" });
+  expect((screen.getByLabelText("Reading language") as HTMLSelectElement).value).toBe("en");
+  fireEvent.click(screen.getByRole("button", { name: "Show original" }));
+  expect(screen.getByText("Hola", { selector: "p" })).toBeTruthy();
+  fireEvent.click(screen.getByRole("button", { name: "Show translation" }));
+  const options = screen.getByLabelText("Options for Bob");
+  fireEvent.click(options);
+  expect(screen.getByRole("button", { name: /Download conversation/ }).hasAttribute("disabled")).toBe(true);
+  fireEvent.change(screen.getByLabelText("Writing language for Bob"), { target: { value: "es" } });
+  await screen.findByText("Writing in Español");
+  expect(push).not.toHaveBeenCalled();
+  expect((screen.getByLabelText("Message") as HTMLTextAreaElement).lang).toBe("es");
 });

@@ -1,3 +1,4 @@
+import { chatLanguages } from "@/lib/chat-languages";
 import { connection } from "next/server";
 import { isGoogleAuthConfigured } from "@/lib/auth-config";
 import { currentChatUser } from "@/lib/chat-api";
@@ -15,5 +16,5 @@ export async function AccountPanel() {
   if (!user) return <Welcome configured={configured} />;
   const view = await (await userSessions()).userView(user.id);
   if (view.selectedChatId) redirect(`/chat/${view.selectedChatId}`);
-  return <ChatWorkspace user={user} initialChats={await (await chatStore()).listChats(user.id)} />;
+  return <ChatWorkspace initialPreferredLanguage={await (await chatLanguages()).preferred(user.id)} user={user} initialChats={await (await chatLanguages()).summaries(await (await chatStore()).listChats(user.id), user.id)} />;
 }

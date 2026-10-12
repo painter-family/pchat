@@ -5,7 +5,7 @@ import { getCloudflareContext } from "@opennextjs/cloudflare";
 import type { D1Database, R2Bucket } from "@cloudflare/workers-types";
 import type { PlatformProxy } from "wrangler";
 
-export type CloudStorage = { DB: D1Database; MEDIA: R2Bucket };
+export type CloudStorage = { DB: D1Database; MEDIA: R2Bucket; AI?: { run(model: "@cf/meta/m2m100-1.2b", input: { text: string; source_lang: string; target_lang: string }): Promise<{ translated_text?: string }> } };
 const state = globalThis as typeof globalThis & { pchatCloudProxy?: Promise<PlatformProxy<CloudStorage>> };
 
 export function storageBackend(): "cloudflare" | "local" {

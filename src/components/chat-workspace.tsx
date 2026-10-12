@@ -5,11 +5,12 @@ import Link from "next/link";
 import Image from "next/image";
 import { useRouter } from "next/navigation";
 import { signOutOfApp } from "@/app/auth/actions";
-import type { ChatMessage, ChatSummary, ChatUser, ChatView, UserView } from "@/lib/chat-types";
+import type { ChatMessage, ChatSummary, ChatUser, ChatView, UserView, Language } from "@/lib/chat-types";
 
 import { api, ChatRequestError, refreshConnections, flushDrafts } from "@/lib/chat-client";
 import { useLiveUpdates } from "./use-live-updates";
 
+const languageLabels = { en: "English", es: "Español" };
 const button = "rounded-xl border border-foreground/20 px-4 py-2 text-sm font-medium hover:bg-foreground/5 disabled:cursor-not-allowed disabled:opacity-50";
 
 function mergeMessages(previous: ChatMessage[], incoming: ChatMessage[]) {
@@ -18,13 +19,14 @@ function mergeMessages(previous: ChatMessage[], incoming: ChatMessage[]) {
   return [...messages.values()].sort((a, b) => a.id - b.id);
 }
 
-export function ChatWorkspace({ user, initialChats, selectedId }: {
-  user: ChatUser; initialChats: ChatSummary[]; selectedId?: string;
+export function ChatWorkspace({ user, initialChats, selectedId, initialPreferredLanguage = "en" }: {
+  user: ChatUser; initialChats: ChatSummary[]; selectedId?: string; initialPreferredLanguage?: Language;
 }) {
   const router = useRouter();
   const [viewer, setViewer] = useState(user);
   useLiveUpdates(viewer.id);
   const [chats, setChats] = useState(initialChats);
+  const [preferredLanguage, setPreferredLanguage] = useState<Language>(initialPreferredLanguage);
   const [creating, setCreating] = useState(false);
   const [error, setError] = useState("");
 
@@ -44,6 +46,14 @@ export function ChatWorkspace({ user, initialChats, selectedId }: {
         ]);
         if (controller.signal.aborted) return;
         setChats(data.chats);
+        setPreferredLanguage(view.preferredLanguage || "en");
+        for (const chat of data.chats) {
+          if (chat.previewMessage?.translation?.status === "pending") {
+            void api<{ messages: ChatMessage[] }>(`/api/chats/${chat.id}/translations`, { method: "POST", signal: controller.signal,
+              headers: { "Content-Type": "application/json" }, body: JSON.stringify({ ids: [chat.previewMessage.id] })
+            }).then(result => { if (result.messages.some(m => m.translation?.status !== "pending")) refreshConnections(); }).catch(() => {});
+          }
+        }
         if (view.user) setViewer(view.user);
         if (view.selectedChatId && view.selectedChatId !== selectedId) {
           await flushDrafts(); router.replace(`/chat/${view.selectedChatId}`);
@@ -77,6 +87,13 @@ export function ChatWorkspace({ user, initialChats, selectedId }: {
     } catch (error) { setError(error instanceof Error ? error.message : "Unable to select chat."); }
   }
 
+  async function changeReadingLanguage(language: Language) {
+    try {
+      await api("/api/view", { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ preferredLanguage: language }) });
+      setPreferredLanguage(language); refreshConnections();
+    } catch (error) { setError(error instanceof Error ? error.message : "Unable to save language."); }
+  }
+
   async function createChat() {
     setCreating(true);
     try {
@@ -98,20 +115,27 @@ export function ChatWorkspace({ user, initialChats, selectedId }: {
         <nav aria-label="Active chats" className="flex max-h-40 flex-1 flex-col gap-1 overflow-y-auto px-3 pb-3 sm:max-h-none">
           {chats.length === 0 && <p className="p-3 text-sm text-foreground/60">Your conversations will appear here.</p>}
           {chats.map((chat) => (
-            <Link key={chat.id} href={`/chat/${chat.id}`} onClick={event => { event.preventDefault(); void selectChat(chat.id); }} aria-current={selectedId === chat.id ? "page" : undefined}
-              className={`rounded-xl p-3 ${selectedId === chat.id ? "bg-teal-700 text-white" : "hover:bg-foreground/5"}`}>
-              <span className="block truncate font-medium">{chat.title}</span>
-              <span className={`mt-1 block truncate text-xs ${selectedId === chat.id ? "text-white/75" : "text-foreground/60"}`}>{chat.lastMessage}</span>
-            </Link>
+            <div key={chat.id} className={`relative rounded-xl ${selectedId === chat.id ? "bg-teal-700 text-white" : "hover:bg-foreground/5"}`}>
+                <Link href={`/chat/${chat.id}`} onClick={event => { event.preventDefault(); void selectChat(chat.id); }} aria-current={selectedId === chat.id ? "page" : undefined} className="block min-w-0 p-3 pr-14">
+                  <span className="block truncate font-medium">{chat.title}</span>
+                  <span className="mt-1 block truncate text-xs opacity-75">{chat.previewMessage?.translation?.status === "failed" ? chat.previewMessage.text : chat.lastMessage}</span>
+                </Link>
+                <ConversationOptions chat={chat} onSaved={refreshConnections} onError={setError} />
+            </div>
           ))}
         </nav>
+        <label className="px-4 pb-3 text-sm">Reading language
+          <select aria-label="Reading language" value={preferredLanguage} onChange={event => { void changeReadingLanguage(event.target.value as Language); }} className="mt-1 w-full rounded-lg border border-foreground/20 bg-background p-2 text-foreground">
+            <option value="en">English</option><option value="es">Español</option>
+          </select>
+        </label>
         <div className="flex items-center justify-between gap-2 border-t border-foreground/10 p-4">
           <p className="min-w-0 truncate text-sm" title={viewer.email}>{viewer.name}</p>
           <form action={signOutOfApp}><button className={button} type="submit">Sign out</button></form>
         </div>
         {error && <p className="px-4 pb-4 text-sm text-red-600" role="alert">{error} <Link href="/" className="underline">Return home</Link></p>}
       </aside>
-      {selectedId ? <Conversation key={`${selectedId}:${viewer.id}`} chatId={selectedId} chat={selected} user={viewer} /> : (
+      {selectedId ? <Conversation key={`${selectedId}:${viewer.id}`} chatId={selectedId} chat={selected} user={viewer} preferredLanguage={preferredLanguage} /> : (
         <section className="flex flex-1 flex-col items-center justify-center px-6 text-center">
           <h1 className="text-3xl font-semibold">Start a conversation</h1>
           <p className="mt-4 max-w-md text-foreground/60">Create a chat, share its invitation link, and exchange messages, images, and videos with a friend.</p>
@@ -122,12 +146,16 @@ export function ChatWorkspace({ user, initialChats, selectedId }: {
   );
 }
 
-function Conversation({ chatId, chat, user }: { chatId: string; chat?: ChatSummary; user: ChatUser }) {
+function Conversation({ chatId, chat, user, preferredLanguage }: { chatId: string; chat?: ChatSummary; user: ChatUser; preferredLanguage: Language }) {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [loaded, setLoaded] = useState(false);
   const [moreHistory, setMoreHistory] = useState(false);
   const [historyLoading, setHistoryLoading] = useState(false);
   const [text, setText] = useState("");
+  const [inputLanguage, setInputLanguage] = useState<Language>(chat?.inputLanguage || "en");
+  const readingLanguage = useRef(preferredLanguage);
+  useEffect(() => { readingLanguage.current = preferredLanguage; }, [preferredLanguage]);
+  const translationAttempts = useRef(new Map<number, number>());
   const [draftStatus, setDraftStatus] = useState("Loading draft…");
   const [file, setFile] = useState<File | null>(null);
   const [sending, setSending] = useState(false);
@@ -159,12 +187,13 @@ function Conversation({ chatId, chat, user }: { chatId: string; chat?: ChatSumma
         const result = await api<ChatView>(`/api/chats/${chatId}/view`, { method: "PATCH", keepalive, headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ ...patch, revision: view.current.revision }) });
         view.current = result;
+        setInputLanguage(result.inputLanguage || "en");
         if (patch.draft !== undefined && draft.current === patch.draft) { dirty.current = false; setDraftStatus("Draft saved"); }
         return result;
       } catch (error) {
         if (error instanceof ChatRequestError && error.status === 409) {
           const latest = await api<ChatView>(`/api/chats/${chatId}/view`);
-          view.current = latest; draft.current = latest.draft; dirty.current = false;
+          view.current = latest; setInputLanguage(latest.inputLanguage || "en"); draft.current = latest.draft; dirty.current = false;
           retryKey.current = null;
           clearTimeout(draftTimer.current); setText(latest.draft); restore.current = latest;
           setDraftStatus("Latest saved draft restored");
@@ -191,6 +220,7 @@ function Conversation({ chatId, chat, user }: { chatId: string; chat?: ChatSumma
 
   useEffect(() => {
     const controller = new AbortController();
+    translationAttempts.current.clear();
     let timer: ReturnType<typeof setTimeout>;
     let cursor = 0;
     let oldest = 0;
@@ -207,7 +237,7 @@ function Conversation({ chatId, chat, user }: { chatId: string; chat?: ChatSumma
         if (!dirty.current && !writeCount.current && saved.revision >= view.current.revision) {
           if (saved.draftRevision !== view.current.draftRevision || saved.draft !== draft.current) retryKey.current = null;
           if (first || saved.anchorId !== view.current.anchorId || saved.anchorOffset !== view.current.anchorOffset) restore.current = saved;
-          view.current = saved; draft.current = saved.draft; setText(saved.draft); setDraftStatus("Draft saved");
+          view.current = saved; setInputLanguage(saved.inputLanguage || "en"); draft.current = saved.draft; setText(saved.draft); setDraftStatus("Draft saved");
         }
         let data = await api<{ messages: ChatMessage[] }>(`/api/chats/${chatId}/messages${cursor ? `?after=${cursor}` : ""}`, { signal: controller.signal });
         const incoming = [...data.messages];
@@ -226,7 +256,8 @@ function Conversation({ chatId, chat, user }: { chatId: string; chat?: ChatSumma
           setMoreHistory(older.messages.length === 100);
         }
         if (controller.signal.aborted) return;
-        setMessages(previous => mergeMessages(previous, incoming));
+        const initialLoad = first;
+        setMessages(previous => mergeMessages(initialLoad ? [] : previous, incoming));
         first = false; setLoaded(true); setConnectionError("");
       } catch (error) {
         if (!controller.signal.aborted) setConnectionError(error instanceof Error ? error.message : "Unable to load messages.");
@@ -256,7 +287,27 @@ function Conversation({ chatId, chat, user }: { chatId: string; chat?: ChatSumma
       window.removeEventListener("pagehide", saveBeforeLeaving);
       document.removeEventListener("visibilitychange", hidden);
     };
-  }, [chatId, flushDraft, saveView]);
+  }, [chatId, preferredLanguage, flushDraft, saveView]);
+
+  const requestTranslation = useCallback(async (ids: number[], retry = false, signal?: AbortSignal) => {
+    const requestedLanguage = readingLanguage.current;
+    const result = await api<{ messages: ChatMessage[] }>(`/api/chats/${chatId}/translations`, { method: "POST", signal,
+      headers: { "Content-Type": "application/json" }, body: JSON.stringify({ ids, retry }) });
+    if (requestedLanguage !== readingLanguage.current) return;
+    setMessages(previous => previous.map(message => {
+      const updated = result.messages.find(row => row.id === message.id);
+      return updated && (!updated.translation || updated.translation.targetLanguage === readingLanguage.current) ? { ...message, translation: updated.translation } : message;
+    }));
+  }, [chatId]);
+
+  useEffect(() => {
+    const ids = messages.filter(message => message.translation?.status === "pending" &&
+      Date.now() - (translationAttempts.current.get(message.id) || 0) > 15000).slice(0, 3).map(message => message.id);
+    if (!ids.length) return;
+    ids.forEach(id => translationAttempts.current.set(id, Date.now()));
+    void requestTranslation(ids).catch(() => {});
+    // Persisted results are also picked up by other connections.
+  }, [messages, requestTranslation]);
 
   useLayoutEffect(() => {
     const element = scroll.current;
@@ -331,6 +382,7 @@ function Conversation({ chatId, chat, user }: { chatId: string; chat?: ChatSumma
     form.set("draftRevision", String(view.current.draftRevision));
     form.set("clientKey", retryKey.current);
     form.set("text", text);
+    form.set("sourceLanguage", view.current.inputLanguage || "en");
     if (file) form.set("file", file);
     try {
       await api(`/api/chats/${chatId}/messages`, { method: "POST", body: form });
@@ -363,7 +415,7 @@ function Conversation({ chatId, chat, user }: { chatId: string; chat?: ChatSumma
           {messages.map((message) => <li key={message.id} data-message-id={message.id} className={`flex ${message.senderId === user.id ? "justify-end" : "justify-start"}`}>
             <article className={`max-w-[90%] rounded-2xl px-4 py-3 sm:max-w-[75%] ${message.senderId === user.id ? "bg-teal-700 text-white" : "bg-foreground/5"}`}>
               <p className="mb-1 text-xs font-medium opacity-75">{message.senderId === user.id ? "You" : message.senderName}</p>
-              {message.text && <p className="whitespace-pre-wrap break-words">{message.text}</p>}
+              {message.text && <MessageText message={message} retry={() => requestTranslation([message.id], true)} />}
               {message.attachment && <div className="mt-2">
                 {message.attachment.mime.startsWith("image/") ? <Image src={`/api/media/${message.attachment.id}`} alt={message.attachment.name} width={640} height={480} unoptimized className="h-auto max-h-80 w-auto max-w-full rounded-lg object-contain" /> :
                   <video src={`/api/media/${message.attachment.id}`} controls preload="metadata" className="max-h-80 max-w-full rounded-lg" aria-label={message.attachment.name} />}
@@ -376,8 +428,9 @@ function Conversation({ chatId, chat, user }: { chatId: string; chat?: ChatSumma
       </div>
       {(error || connectionError) && <p className="px-5 py-2 text-sm text-red-600" role="alert">{error || connectionError} {connectionError && <Link href="/" className="underline">Return home</Link>}</p>}
       <form onSubmit={send} className="border-t border-foreground/10 p-4">
+        <p className="mb-2 text-xs text-foreground/70">Writing in {languageLabels[inputLanguage]}</p>
         <label htmlFor="message" className="sr-only">Message</label>
-        <textarea id="message" value={text} maxLength={10000} rows={2} disabled={sending || !loaded} placeholder="Write a message…" aria-describedby="message-keyboard-hint" className="w-full resize-none rounded-xl border border-foreground/20 bg-background p-3" onChange={(event) => editDraft(event.target.value)} onKeyDown={(event) => {
+        <textarea id="message" value={text} maxLength={10000} rows={2} disabled={sending || !loaded} lang={inputLanguage} placeholder={inputLanguage === "es" ? "Escribe un mensaje…" : "Write a message…"} aria-describedby="message-keyboard-hint" className="w-full resize-none rounded-xl border border-foreground/20 bg-background p-3" onChange={(event) => editDraft(event.target.value)} onKeyDown={(event) => {
           if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) {
             event.preventDefault();
             if (canSend && !event.repeat) event.currentTarget.form?.requestSubmit();
@@ -400,4 +453,56 @@ function Conversation({ chatId, chat, user }: { chatId: string; chat?: ChatSumma
       </form>
     </section>
   );
+}
+
+function ConversationOptions({ chat, onSaved, onError }: { chat: ChatSummary; onSaved: () => void; onError: (error: string) => void }) {
+  const details = useRef<HTMLDetailsElement>(null);
+  const [saving, setSaving] = useState(false);
+  useEffect(() => {
+    const close = (event: PointerEvent) => { if (!details.current?.contains(event.target as Node)) details.current?.removeAttribute("open"); };
+    document.addEventListener("pointerdown", close);
+    return () => document.removeEventListener("pointerdown", close);
+  }, []);
+  async function change(language: Language) {
+    setSaving(true);
+    try {
+      await flushDrafts();
+      const view = await api<ChatView>(`/api/chats/${chat.id}/view`);
+      await api(`/api/chats/${chat.id}/view`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ revision: view.revision, inputLanguage: language }) });
+      onSaved(); details.current?.removeAttribute("open");
+    } catch (error) { onError(error instanceof Error ? error.message : "Unable to save writing language."); }
+    finally { setSaving(false); }
+  }
+  return <details ref={details} className="px-3" onKeyDown={event => {
+    if (event.key === "Escape") { event.preventDefault(); details.current?.removeAttribute("open"); details.current?.querySelector("summary")?.focus(); }
+  }}>
+    <summary aria-label={`Options for ${chat.title}`} className="absolute right-1 top-1 flex h-11 w-11 cursor-pointer list-none items-center justify-center rounded-lg text-xl hover:bg-foreground/10 [&::-webkit-details-marker]:hidden">⋮</summary>
+    <div className="mb-3 rounded-lg border border-foreground/20 bg-background p-3 text-foreground shadow-lg">
+      <label className="block text-xs">Writing language
+        <select aria-label={`Writing language for ${chat.title}`} disabled={saving} value={chat.inputLanguage || "en"} onChange={event => { void change(event.target.value as Language); }} className="mt-1 w-full rounded border border-foreground/20 bg-background p-2 text-sm">
+          <option value="en">English</option><option value="es">Español</option>
+        </select>
+      </label>
+      <button type="button" disabled className="mt-3 block text-left text-xs opacity-50">Download conversation · Coming soon</button>
+      <button type="button" disabled className="mt-3 block text-left text-xs opacity-50">Delete conversation · Coming soon</button>
+    </div>
+  </details>;
+}
+
+function MessageText({ message, retry }: { message: ChatMessage; retry: () => Promise<void> }) {
+  const [original, setOriginal] = useState(false);
+  const [retrying, setRetrying] = useState(false);
+  const [retryError, setRetryError] = useState("");
+  const translation = message.translation;
+  const translated = translation?.status === "ready" && translation.text;
+  return <div>
+    <p lang={translated && !original ? translation.targetLanguage : message.sourceLanguage || "en"} className="whitespace-pre-wrap break-words">{translated && !original ? translation.text : message.text}</p>
+    {translation && <div className="mt-2 text-xs opacity-80">
+      {translated ? <><span>Translated from {message.sourceLanguage === "es" ? "Spanish" : "English"} · </span><button type="button" className="underline" onClick={() => setOriginal(value => !value)}>{original ? "Show translation" : "Show original"}</button></> :
+        translation.status === "failed" ? <>Translation unavailable · <button type="button" className="underline" disabled={retrying} onClick={async () => {
+          setRetrying(true); setRetryError(""); try { await retry(); } catch { setRetryError("Unable to retry. Try again."); } finally { setRetrying(false); }
+        }}>{retrying ? "Retrying…" : "Retry translation"}</button></> : <span role="status">Translating… · Original shown</span>}
+      {retryError && <p role="alert">{retryError}</p>}
+    </div>}
+  </div>;
 }

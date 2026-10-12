@@ -1,3 +1,4 @@
+import { chatLanguages } from "@/lib/chat-languages";
 import { chatApi } from "@/lib/chat-api";
 import { ChatError, isChatError, chatStore, type StoredAttachment } from "@/lib/chat-store";
 import { discardUpload, limitedFormData, saveUpload } from "@/lib/chat-media";
@@ -13,7 +14,7 @@ export async function GET(request: Request, { params }: { params: Promise<{ id: 
     if (![after, before].every((value) => Number.isSafeInteger(value) && value >= 0) || (after && before)) {
       throw new ChatError("Invalid message cursor.");
     }
-    return Response.json({ messages: await (await chatStore()).messages(id, user.id, { after, before }) });
+    return Response.json({ messages: await (await chatLanguages()).decorate(await (await chatStore()).messages(id, user.id, { after, before }), user.id) });
   });
 }
 
@@ -28,12 +29,14 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
     if (typeof text !== "string" || text.length > 10000 || typeof clientKey !== "string" || !/^[\w-]{1,80}$/.test(clientKey)) {
       throw new ChatError("Invalid message.");
     }
+    const sourceLanguage = form.get("sourceLanguage") || "en";
+    if (sourceLanguage !== "en" && sourceLanguage !== "es") throw new ChatError("Invalid writing language.");
     const file = form.get("file");
     if (file !== null && !(file instanceof File)) throw new ChatError("Invalid attachment.");
     let attachment: StoredAttachment | undefined;
     try {
       if (file instanceof File) attachment = await saveUpload(file);
-      const result = await store.sendMessage(id, user, text, clientKey, attachment);
+      const result = await store.sendMessage(id, user, text, clientKey, attachment, sourceLanguage);
       if (!result.inserted && attachment) await discardUpload(attachment);
       const sessions = await userSessions();
       const revision = form.get("draftRevision");

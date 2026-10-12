@@ -6,6 +6,7 @@ import path from "node:path";
 import type { ChatMessage, ChatSummary, ChatUser } from "./chat-types";
 import { storageBackend, cloudStorage } from "./cloudflare-storage";
 import type { D1ChatStore } from "./d1-chat-store";
+import { LANGUAGE_SCHEMA } from "./language-schema";
 import { SESSION_SCHEMA } from "./session-schema";
 import { chatInvitationKey } from "./chat-invites";
 
@@ -50,6 +51,12 @@ export class ChatStore {
       CREATE INDEX IF NOT EXISTS members_user_id ON members(user_id);
     `);
     this.db.exec(SESSION_SCHEMA);
+    for (const [table, column] of [["messages", "source_language"], ["chat_views", "input_language"]]) {
+      if (!this.db.prepare(`PRAGMA table_info(${table})`).all().some(row => row.name === column)) {
+        this.db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} TEXT NOT NULL DEFAULT 'en' CHECK(${column} IN ('en','es'))`);
+      }
+    }
+    this.db.exec(LANGUAGE_SCHEMA);
   }
 
   private transaction<T>(fn: () => T): T {
@@ -153,11 +160,11 @@ export class ChatStore {
       ORDER BY m.id ${newer ? "ASC" : "DESC"} LIMIT 100`).all(...(after || before ? [chatId, after || before] : [chatId]));
     if (!newer) rows.reverse();
     return rows.map((row) => ({ id: Number(row.id), chatId: String(row.chat_id), senderId: String(row.sender_id),
-      senderName: String(row.sender_name), text: String(row.text), createdAt: Number(row.created_at),
+      senderName: String(row.sender_name), text: String(row.text), sourceLanguage: row.source_language === "es" ? "es" : "en", createdAt: Number(row.created_at),
       attachment: row.attachment_id ? { id: String(row.attachment_id), name: String(row.attachment_name), mime: String(row.mime), size: Number(row.size) } : null }));
   }
 
-  sendMessage(chatId: string, user: ChatUser, text: string, clientKey: string, attachment?: StoredAttachment) {
+  sendMessage(chatId: string, user: ChatUser, text: string, clientKey: string, attachment?: StoredAttachment, sourceLanguage: "en" | "es" = "en") {
     if (text.length > 10000) throw new ChatError("Messages can contain at most 10,000 characters.");
     if (!text.trim() && !attachment) throw new ChatError("Enter a message or choose an image or video.");
     if (!/^[\w-]{1,80}$/.test(clientKey)) throw new ChatError("Invalid message identifier.");
@@ -167,8 +174,8 @@ export class ChatStore {
       if (existing) return { id: Number(existing.id), inserted: false };
       this.upsertUser(user);
       const now = Date.now();
-      const result = this.db.prepare("INSERT INTO messages(chat_id,sender_id,client_key,text,created_at) VALUES(?,?,?,?,?)")
-        .run(chatId, user.id, clientKey, text.trim(), now);
+      const result = this.db.prepare("INSERT INTO messages(chat_id,sender_id,client_key,text,created_at,source_language) VALUES(?,?,?,?,?,?)")
+        .run(chatId, user.id, clientKey, text.trim(), now, sourceLanguage);
       const id = Number(result.lastInsertRowid);
       if (attachment) this.db.prepare("INSERT INTO attachments VALUES(?,?,?,?,?,?)")
         .run(attachment.id, id, attachment.name, attachment.mime, attachment.size, attachment.storageName);
